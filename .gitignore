@@ -25,3 +25,7 @@ Vendor/
 
 # Launch-video / marketing assets live in their own working dir.
 marketing/
+
+# Maintainer-only notes (launch playbooks, analytics ops, internal dashboards).
+# See CLAUDE.md → "docs/ vs notes/" for what belongs here vs in public docs/.
+notes/

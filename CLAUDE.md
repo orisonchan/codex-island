@@ -98,6 +98,33 @@ History — read before re-stepping on these rakes:
 - The bundle ID `dev.codexisland.CodexIsland` — changing it orphans every existing user's preferences and Launch-at-Login registration.
 - The `SU_PUBLIC_KEY` constant in `build.sh`. See hard rule #2.
 
+## `docs/` vs `notes/` — what gets committed
+
+This repo is public open source. `docs/` is for things a contributor or
+curious user would read. `notes/` is gitignored and is for maintainer-only
+operational material. **When in doubt, default to `notes/`** — it's
+trivial to promote a file later, painful to scrub git history.
+
+**`docs/` (committed, public):**
+- Build / release / signing process (e.g. `SPARKLE.md`).
+- Architecture deep-dives, protocol notes, contributor onboarding.
+- Anything that helps someone reading the source understand it or ship a PR.
+
+**`notes/` (gitignored, maintainer-only) — examples of what belongs here:**
+- Launch / marketing playbooks (where to post, when to post, UTM schemas, channel-by-channel rules).
+- Analytics & traffic ops (PostHog dashboards, GitHub traffic API workflows, install-funnel telemetry, dashboard URLs).
+- Anything mentioning private infra: tokens, secret names, dashboard IDs, internal cron schedules — even if the secret value isn't there, the *shape* of the deployment is.
+- Personal launch-strategy retrospectives, growth experiments, A/B copy drafts.
+
+**Heuristic:** if removing the file from the public repo would *embarrass*
+nothing and *help* nobody outside the maintainer, it belongs in `notes/`.
+If it would actively help a contributor or a downstream packager, it
+belongs in `docs/`.
+
+When creating a new doc in this category, do **not** add it to `docs/` and
+later move it — moving leaves a deletion in history that still shows the
+title and intent. Create it in `notes/` from the start.
+
 ## Style
 
 - Conventional Commits: `feat:`, `fix:`, `chore:`, `refactor:`, `test:`, `docs:`. No `Co-Authored-By` lines.
