@@ -52,10 +52,37 @@ final class IslandHostingView: NSHostingView<IslandRootView> {
     /// Two-finger trackpad swipe → page change. Only fires when the panel is
     /// expanded and the gesture is horizontal-dominant. Uses
     /// `hasPreciseScrollingDeltas` to filter out mouse-wheel ticks (which
-    /// shouldn't be page-changers — only gestures should).
+    /// shouldn't be page-changers — only gestures should), with one
+    /// exception: Shift+wheel from a regular mouse, which is the macOS
+    /// convention for horizontal scroll and is the documented fallback
+    /// for users without a trackpad or Magic Mouse.
     override func scrollWheel(with event: NSEvent) {
-        guard event.hasPreciseScrollingDeltas,
-              islandModel.state == .expanded else {
+        guard islandModel.state == .expanded else {
+            super.scrollWheel(with: event)
+            return
+        }
+
+        // Shift+scroll fallback (works on trackpad and regular mouse).
+        // We react per-event instead of accumulating across phases:
+        // wheel ticks have no `.began`/`.ended` phase at all, and for
+        // trackpads the edge-clamped advance/rewind makes the many
+        // `.changed` events from one swipe coalesce harmlessly. macOS may
+        // swap deltaY→deltaX with Shift held in some contexts but not
+        // all, so we read whichever axis carries signal.
+        if event.modifierFlags.contains(.shift) {
+            let delta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+                ? event.scrollingDeltaX
+                : event.scrollingDeltaY
+            guard abs(delta) > 0.5 else { return }
+            if delta < 0 {
+                ScreenPref.shared.advance()
+            } else {
+                ScreenPref.shared.rewind()
+            }
+            return
+        }
+
+        guard event.hasPreciseScrollingDeltas else {
             super.scrollWheel(with: event)
             return
         }

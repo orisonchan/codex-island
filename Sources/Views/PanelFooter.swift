@@ -29,27 +29,33 @@ struct PanelFooter: View {
             .frame(height: 1)
             .padding(.horizontal, 22)
 
-            HStack(spacing: 10) {
-                chip
+            ZStack {
+                HStack(spacing: 10) {
+                    chip
 
-                if !activeStyleCycled {
-                    HStack(spacing: 5) {
-                        Image(systemName: "command")
-                            .font(Typography.micro)
-                        Text("click to cycle")
-                            .font(Typography.label)
+                    if !activeStyleCycled {
+                        HStack(spacing: 5) {
+                            Image(systemName: "command")
+                                .font(Typography.micro)
+                            Text("click to cycle")
+                                .font(Typography.label)
+                        }
+                        .foregroundStyle(.white.opacity(0.42))
+                        .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .leading)))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Tip: Command-click to cycle visualization")
                     }
-                    .foregroundStyle(.white.opacity(0.42))
-                    .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .leading)))
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Tip: Command-click to cycle visualization")
+
+                    Spacer()
+
+                    liveStatus
                 }
 
-                Spacer()
-
-                PageIndicator(active: screenPref.screen)
-
-                liveStatus
+                // Centered horizontally over the row regardless of how
+                // wide the chip + tip on the left or the live-status on
+                // the right grow. Independent of those widths so the dots
+                // sit at true bottom-center of the panel.
+                PageIndicator()
             }
             .padding(.horizontal, 22)
             .padding(.top, 6)
