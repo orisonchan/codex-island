@@ -1,11 +1,12 @@
 import Foundation
 
-/// User preference for the ambient loading-sweep animation.
+/// User preference for the ambient halo + loading sweep.
 ///
-/// Default off: the cobalt orbit runs continuously, even when no fetch is in
-/// progress. With low-power mode on, the sweep only renders while a fetch is
-/// actually running — saving the per-frame angular-gradient + blur work the
-/// rest of the time.
+/// Default off: both the halo glow and the cobalt orbit run continuously.
+/// With low-power mode on, both surfaces are gated on a "glow event"
+/// predicate — they appear only while a fetch is in flight, the cursor is
+/// hovering the island, or an alert is active. At rest the island goes
+/// dark, saving the per-frame angular-gradient + blur work.
 @MainActor
 final class LowPowerModeStore: ObservableObject {
     static let shared = LowPowerModeStore()

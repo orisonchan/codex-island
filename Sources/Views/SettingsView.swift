@@ -192,7 +192,7 @@ struct SettingsView: View {
             }
             SettingsRow(
                 title: "Low Power Mode",
-                subtitle: "Only show the cobalt glow during active refreshes."
+                subtitle: "Glow only on refresh, hover, or limit alerts."
             ) {
                 SettingsToggle(isOn: lowPower.enabled) {
                     lowPower.enabled.toggle()

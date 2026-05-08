@@ -32,14 +32,14 @@ struct IslandRootView: View {
             // hover-spring jank.
             ZStack {
                 // Default: ambient orbit runs continuously. Low-power mode
-                // restricts it to active fetches only — same behavior as
-                // before this preference existed. The orbit color follows
-                // the alert severity so the entire glow (halo + sweep)
-                // reads as one consistent color when above threshold.
+                // restricts it to the three "glow events" — refresh, hover,
+                // or an active limit alert — so the island stays dark at
+                // rest but lights up consistently for any meaningful state
+                // change. The orbit color follows the alert severity so
+                // the entire glow (halo + sweep) reads as one consistent
+                // color when above threshold.
                 LoadingSweep(
-                    active: lowPower.enabled
-                        ? (usageStore.loading || costStore.loading)
-                        : true,
+                    active: lowPower.enabled ? glowEventActive : true,
                     tint: glowColor
                 )
 
@@ -52,12 +52,17 @@ struct IslandRootView: View {
                                 lineWidth: 0.5
                             )
                     }
-                    // Halo fully suppressed under Low Power Mode — alerts
-                    // don't override LPM. The LoadingSweep (also LPM-gated
-                    // to fetches only) carries the alert tint when it
-                    // appears, so the user still gets a colored signal
-                    // during refreshes.
-                    .shadow(color: glowColor.opacity(lowPower.enabled ? 0 : 0.35), radius: 14, y: 0)
+                    // Halo follows LPM's event predicate: under LPM it's
+                    // suppressed at rest and lights up only on refresh,
+                    // hover, or an active alert. Off-LPM it stays at the
+                    // ambient 0.35 the way it always has.
+                    .shadow(
+                        color: glowColor.opacity(
+                            lowPower.enabled ? (glowEventActive ? 0.35 : 0) : 0.35
+                        ),
+                        radius: 14, y: 0
+                    )
+                    .animation(.easeInOut(duration: 0.25), value: glowEventActive)
                     // Cross-fade the glow hue when severity steps cobalt →
                     // amber → red. Without this, a 79% → 80% refresh tick
                     // visibly snaps; with it, the boundary feels like a
@@ -304,6 +309,17 @@ struct IslandRootView: View {
                 }
             }
         }
+    }
+
+    /// Under Low Power Mode the halo + sweep are gated on this predicate:
+    /// the user sees glow only when something is happening (a fetch is in
+    /// flight, the cursor is hovering, or an alert is active). Off-LPM it's
+    /// ignored — both surfaces run continuously.
+    private var glowEventActive: Bool {
+        hovering
+            || usageStore.loading
+            || costStore.loading
+            || alerts.severity != .none
     }
 
     /// Silhouette glow color. Cobalt is the ambient default; alert
