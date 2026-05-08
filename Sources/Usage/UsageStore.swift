@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Network
 
 @MainActor
 final class UsageStore: ObservableObject {
@@ -14,6 +15,9 @@ final class UsageStore: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var pollTimer: Timer?
     private var intervalCancellable: AnyCancellable?
+    private var netMonitor: NWPathMonitor?
+    private let netQueue = DispatchQueue(label: "UsageStore.network")
+    private var lastNetStatus: NWPath.Status?
 
     /// Anthropic's /api/oauth/usage is aggressively rate-limited per token.
     /// `RefreshIntervalStore` enforces a 5-minute floor (300/900/1800).
@@ -67,6 +71,15 @@ final class UsageStore: ObservableObject {
             async let claudeResult = UsageFetcher.fetchClaude()
             let c = await codexResult
             let cl = await claudeResult
+
+            // Cancellation = network monitor saw the path come up while we
+            // were mid-flight on a dead one. The fetched values are the
+            // dead-path errors — drop them so the supersedes refresh
+            // doesn't have a brief "cancelled" caption flash to overwrite.
+            if Task.isCancelled {
+                self.loading = false
+                return
+            }
 
             // Don't clobber existing good values when a fetch returns an
             // all-error result. A transient 429 shouldn't blank the panel
@@ -144,6 +157,7 @@ final class UsageStore: ObservableObject {
             .sink { [weak self] _ in
                 Task { @MainActor in self?.armTimer() }
             }
+        startNetworkMonitor()
     }
 
     func stopAutoRefresh() {
@@ -151,6 +165,9 @@ final class UsageStore: ObservableObject {
         pollTimer = nil
         intervalCancellable?.cancel()
         intervalCancellable = nil
+        netMonitor?.cancel()
+        netMonitor = nil
+        lastNetStatus = nil
     }
 
     private func armTimer() {
@@ -158,5 +175,36 @@ final class UsageStore: ObservableObject {
         pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+    }
+
+    /// Trigger an immediate refresh whenever the network transitions from
+    /// unsatisfied to satisfied — closes the launch-at-login race where
+    /// Wi-Fi is still associating when our first refresh fires. Without
+    /// this, the panel sits at the empty cold-start state until the next
+    /// scheduled poll (5–30 minutes away). The initial path callback fires
+    /// with the current state and is deliberately ignored (lastNetStatus
+    /// starts nil) — startAutoRefresh's own refresh() already covers
+    /// cold-start, and acting on the initial callback would double-fire.
+    private func startNetworkMonitor() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let was = self.lastNetStatus
+                self.lastNetStatus = path.status
+                guard path.status == .satisfied,
+                      let prior = was, prior != .satisfied else { return }
+                // Cancel any in-flight refresh — its URLSession call was
+                // started on the dead path and is going to return an
+                // error. Wait for it to finalize so its loading=false
+                // lands before we start the replacement, otherwise our
+                // refresh() hits the `if loading { return }` guard.
+                self.refreshTask?.cancel()
+                await self.refreshTask?.value
+                self.refresh()
+            }
+        }
+        monitor.start(queue: netQueue)
+        netMonitor = monitor
     }
 }
