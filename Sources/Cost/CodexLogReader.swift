@@ -15,28 +15,17 @@ import Foundation
 enum CodexLogReader {
     static func scan(lookbackDays: Int = 30) -> [TokenEvent] {
         let cutoff = Date().addingTimeInterval(-Double(lookbackDays) * 86400)
-        var cache = loadCache()
         var out: [TokenEvent] = []
-        var visited = Set<String>()
-        var cacheChanged = false
 
-        for entry in jsonlFiles(under: sessionsRoot(), modifiedAfter: cutoff) {
-            let path = entry.url.path
-            visited.insert(path)
-
-            let cachedEvents: [CachedEvent]
-            if let hit = cache.files[path], hit.matches(mtime: entry.mtime, size: entry.size) {
-                cachedEvents = hit.events
-            } else {
-                cachedEvents = parseFile(at: entry.url)
-                cache.files[path] = CachedFile(
-                    mtime: entry.mtime, size: entry.size, events: cachedEvents
-                )
-                cacheChanged = true
-            }
-
-            for ev in cachedEvents {
-                guard ev.timestamp >= cutoff else { continue }
+        LogParseCache.walk(
+            roots: [sessionsRoot()],
+            cutoff: cutoff,
+            cacheFilename: "codex-parse-cache.v1.json",
+            cacheVersion: cacheVersion,
+            fileFilter: { $0.lastPathComponent.hasPrefix("rollout-") },
+            parse: parseFile(at:),
+            emit: { (ev: CachedEvent) in
+                guard ev.timestamp >= cutoff else { return }
                 out.append(TokenEvent(
                     provider: .codex,
                     timestamp: ev.timestamp,
@@ -47,13 +36,7 @@ enum CodexLogReader {
                     cacheReadTokens: ev.cacheReadTokens
                 ))
             }
-        }
-
-        let preCount = cache.files.count
-        cache.files = cache.files.filter { visited.contains($0.key) }
-        if cache.files.count != preCount { cacheChanged = true }
-
-        if cacheChanged { saveCache(cache) }
+        )
         return out
     }
 
@@ -65,41 +48,10 @@ enum CodexLogReader {
         return home.appendingPathComponent(".codex/sessions", isDirectory: true)
     }
 
-    private struct FileEntry {
-        let url: URL
-        let mtime: Date
-        let size: Int64
-    }
-
-    private static func jsonlFiles(under root: URL, modifiedAfter cutoff: Date) -> [FileEntry] {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return [] }
-
-        var hits: [FileEntry] = []
-        for case let url as URL in enumerator {
-            guard url.pathExtension == "jsonl",
-                  url.lastPathComponent.hasPrefix("rollout-") else { continue }
-            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey])
-            guard values?.isRegularFile == true,
-                  let mtime = values?.contentModificationDate,
-                  let size = values?.fileSize else { continue }
-            if mtime < cutoff { continue }
-            hits.append(FileEntry(url: url, mtime: mtime, size: Int64(size)))
-        }
-        return hits
-    }
-
     /// Parse a single file end-to-end. Threads the active model through the
     /// file's lines (Codex sessions can `/model` mid-stream) and emits one
     /// CachedEvent per usage-bearing turn.
     private static func parseFile(at url: URL) -> [CachedEvent] {
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else { return [] }
-
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let formatterNoFractional = ISO8601DateFormatter()
@@ -108,18 +60,15 @@ enum CodexLogReader {
         var currentModel: String?
         var out: [CachedEvent] = []
 
-        // Manual newline split rather than `enumerateLines` — its closure
-        // is escaping and can't capture our `currentModel` thread state.
-        for line in text.split(whereSeparator: { $0.isNewline }) {
-            guard let lineData = line.data(using: .utf8),
-                  let raw = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                  let type = raw["type"] as? String else { continue }
+        LogParseCache.streamLines(at: url) { lineData in
+            guard let raw = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let type = raw["type"] as? String else { return }
 
             if type == "turn_context",
                let payload = raw["payload"] as? [String: Any],
                let model = payload["model"] as? String {
                 currentModel = model
-                continue
+                return
             }
 
             guard type == "event_msg",
@@ -127,7 +76,7 @@ enum CodexLogReader {
                   (payload["type"] as? String) == "token_count",
                   let info = payload["info"] as? [String: Any],
                   let last = info["last_token_usage"] as? [String: Any]
-            else { continue }
+            else { return }
 
             let timestampString = raw["timestamp"] as? String ?? ""
             let timestamp = formatter.date(from: timestampString)
@@ -142,7 +91,7 @@ enum CodexLogReader {
             let nonCachedInput = max(0, totalInput - cached)
             let output = (last["output_tokens"] as? Int) ?? 0
 
-            if nonCachedInput == 0 && cached == 0 && output == 0 { continue }
+            if nonCachedInput == 0 && cached == 0 && output == 0 { return }
 
             // Fall back to gpt-5.4 for sessions that emit token_count before
             // any turn_context (early Codex CLI builds did this). Better
@@ -170,44 +119,5 @@ enum CodexLogReader {
         let inputTokens: Int
         let outputTokens: Int
         let cacheReadTokens: Int
-    }
-
-    private struct CachedFile: Codable {
-        let mtime: Date
-        let size: Int64
-        let events: [CachedEvent]
-
-        func matches(mtime other: Date, size otherSize: Int64) -> Bool {
-            guard size == otherSize else { return false }
-            return abs(mtime.timeIntervalSinceReferenceDate - other.timeIntervalSinceReferenceDate) < 0.001
-        }
-    }
-
-    private struct ParseCache: Codable {
-        var version: Int
-        var files: [String: CachedFile]
-    }
-
-    private static func cacheURL() -> URL? {
-        let fm = FileManager.default
-        guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
-        let dir = caches.appendingPathComponent("dev.codexisland.CodexIsland", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("codex-parse-cache.v1.json")
-    }
-
-    private static func loadCache() -> ParseCache {
-        guard let url = cacheURL(),
-              let data = try? Data(contentsOf: url),
-              let cache = try? JSONDecoder().decode(ParseCache.self, from: data),
-              cache.version == cacheVersion
-        else { return ParseCache(version: cacheVersion, files: [:]) }
-        return cache
-    }
-
-    private static func saveCache(_ cache: ParseCache) {
-        guard let url = cacheURL(),
-              let data = try? JSONEncoder().encode(cache) else { return }
-        try? data.write(to: url, options: .atomic)
     }
 }
