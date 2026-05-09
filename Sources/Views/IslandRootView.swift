@@ -418,32 +418,37 @@ private struct RotatingSweep: View {
     @State private var rotation: Double = 0
 
     var body: some View {
-        AngularGradient(
-            gradient: Gradient(stops: [
-                .init(color: .clear, location: 0.00),
-                .init(color: tint.opacity(0.0), location: 0.55),
-                .init(color: tint, location: 0.78),
-                .init(color: .white.opacity(0.95), location: 0.92),
-                .init(color: tint.opacity(0.0), location: 1.00),
-            ]),
-            center: .center,
-            angle: .degrees(0)
-        )
-        // Mask to the same 4pt-wide IslandShape stroke as the original.
+        // Wrap the rotating gradient in a stable ZStack so the outer
+        // `.mask` stays in the parent's (un-rotated) coordinate space.
+        // Without this wrapper, applying `.rotationEffect` then `.mask`
+        // rotates the entire masked result — the silhouette outline
+        // itself spins, which reads as a diagonal beam instead of a
+        // bright spot orbiting a static silhouette.
+        ZStack {
+            AngularGradient(
+                gradient: Gradient(stops: [
+                    .init(color: .clear, location: 0.00),
+                    .init(color: tint.opacity(0.0), location: 0.55),
+                    .init(color: tint, location: 0.78),
+                    .init(color: .white.opacity(0.95), location: 0.92),
+                    .init(color: tint.opacity(0.0), location: 1.00),
+                ]),
+                center: .center,
+                angle: .degrees(0)
+            )
+            .rotationEffect(.degrees(rotation))
+        }
         .mask(
             IslandShape()
                 .stroke(Color.white, lineWidth: 4)
         )
         .blur(radius: 3)
-        .rotationEffect(.degrees(rotation))
         .onAppear {
             // Reset to 0 in case onAppear fires after a previous mount.
             rotation = 0
             withAnimation(.linear(duration: 3.6).repeatForever(autoreverses: false)) {
                 // Setting once with .repeatForever lets SwiftUI translate
                 // this into a CABasicAnimation on `transform.rotation.z`.
-                // 360° = full revolution; the value the body reads stays
-                // animatably interpolated by the system.
                 rotation = 360
             }
         }
