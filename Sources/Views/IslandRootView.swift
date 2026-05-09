@@ -514,6 +514,12 @@ private final class SweepNSView: NSView {
         anim.duration = 3.6
         anim.repeatCount = .infinity
         anim.isRemovedOnCompletion = false
+        // Constant angular velocity — without this, CABasicAnimation
+        // defaults to ease-in/ease-out which makes the rotation visibly
+        // slow down and speed up every 3.6s cycle. The original SwiftUI
+        // TimelineView used linear time (`t * 100`), so we need linear
+        // here to match.
+        anim.timingFunction = CAMediaTimingFunction(name: .linear)
         gradientLayer.add(anim, forKey: "rotate")
     }
 }
