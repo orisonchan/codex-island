@@ -3,28 +3,55 @@ import SwiftUI
 // MARK: - Per-model breakdown
 //
 // Shown in the half of the panel freed when one provider is toggled off in
-// Settings → Providers. Powered by `CostStore`'s `recentByModel` rolling
-// 5-hour window — the same data both pages already consume, so no extra
-// fetch.
+// Settings → Providers. Powered by `CostStore`'s `recentByModel` (5h slice)
+// and `weekByModel` (7d slice) — the same data the live tiles already
+// summarize, so no extra fetch.
 //
-// Two flavors share row layout, capsule bar, and header:
-//   - `PerModelTokenBreakdown` (usage page): trailing column is token volume.
-//   - `PerModelCostBreakdown`  (cost page):  trailing column is dollar spend.
+// One unified `PerModelBreakdown(provider:, metric:)` struct handles both
+// the usage page (tokens) and the cost page (dollars). The row layout is
+// identical between metrics so a metric swap (cost-page Cmd-click into
+// TOKENS style) doesn't reflow the column.
+//
+// Each row's bar carries TWO meanings via overlapping fills on a single
+// track. The bar is normalized PER ROW so the model's own week absolute
+// fills the full track, and the 5h fill is a sub-portion of that:
+//   - Background, dim brand color: always the full track (= the model's
+//     own week activity).
+//   - Foreground, bright brand color: `recentAbsolute / weekAbsolute`
+//     of the track (= the fraction of the model's week that fell in the
+//     last 5h). Always ≤ the dim fill.
+// A model heavily used today but only marginally over the week reads as
+// a near-full bright bar over a full dim bar (most of the model's week
+// is happening now). A model that was used earlier this week but quiet
+// now reads as just a dim bar (no bright). A new model used only in
+// the last 5h reads as nearly full bright over full dim (5h IS this
+// model's whole week).
+//
+// Cross-row scale is intentionally dropped from the bar (so the heavy
+// hitter doesn't pin everyone else to a single pixel) and shown via the
+// trailing column's WEEK absolute (tokens or $).
 //
 // Both intentionally do NOT respect `StylePref.style` (chart-style cycling)
 // — the breakdown is a different vocabulary (table, not gauge) and the
 // footer chip already communicates which style the live tiles are using.
 
 /// Visual weights mapped by row index — top model dominates, lesser models
-/// recede. Independent of % share so a single-active-model run still reads
-/// as "the active row" rather than four faded peers.
+/// recede. Independent of fill length so a tiny-but-active row still reads
+/// as "live" rather than as a dead row.
 private let perModelRowWeights: [Double] = [0.85, 0.55, 0.40, 0.30]
 
-/// Maximum rows shown — beyond this the column gets crowded at 96pt height.
-/// Surplus models are still summed into the cost-page footer total so the
-/// dollar figure stays honest; the usage-page footer just shows the reset
-/// countdown so the omission is invisible there.
-private let perModelRowLimit = 3
+/// Multiplier applied to the weight for the dim (week) fill so it sits
+/// behind the bright (5h) fill on the same track. Surfaced as a constant
+/// so the legend swatch and the bar fill stay locked together — drift
+/// between them is the kind of "looks slightly off" bug visual QA flags
+/// last and the implementor sees never.
+private let dimFillMultiplier: Double = 0.30
+
+/// Maximum rows shown. Four rows fit comfortably in a ~90pt-tall column
+/// alongside one header line at 11pt label / 10pt caption typography.
+private let perModelRowLimit = 4
+
+// MARK: - Provider helpers
 
 private func providerBrandColor(_ provider: AlertEngine.Provider) -> Color {
     switch provider {
@@ -48,287 +75,65 @@ private func recentRows(for provider: AlertEngine.Provider, store: CostStore) ->
     }
 }
 
-// MARK: - Shared header
-
-private struct PerModelHeader: View {
-    /// "5h" on the usage page, "5h $" on the cost page — a single-glyph
-    /// hint so the user knows at a glance which metric the trailing column
-    /// is showing.
-    let trailingHint: String
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("BY MODEL")
-                .font(Typography.sectionLabel)
-                .tracking(0.6)
-                .foregroundStyle(.white.opacity(0.55))
-            Text("·")
-                .font(Typography.caption)
-                .foregroundStyle(.white.opacity(0.32))
-            Text(trailingHint)
-                .font(Typography.caption)
-                .foregroundStyle(.white.opacity(0.35))
-                .textCase(.lowercase)
-            Spacer(minLength: 0)
-        }
+@MainActor
+private func weekRowsList(for provider: AlertEngine.Provider, store: CostStore) -> [ModelUsageRow] {
+    switch provider {
+    case .claude: return store.claude.weekByModel
+    case .codex:  return store.codex.weekByModel
     }
 }
 
-// MARK: - Shared capsule bar
+// MARK: - Joined row (one model, two windows)
 
-private struct PerModelBar: View {
-    let percent: Int
-    let color: Color
-    let weight: Double
+/// One model's data across both windows. `recent` is `nil` when the model
+/// had no 5h activity (only week activity); `week` is always non-nil
+/// because `weekByModel` is the superset (5h ⊂ wk).
+private struct JoinedModelRow {
+    let model: String
+    let displayName: String
+    let recent: ModelUsageRow?
+    let week: ModelUsageRow
 
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(.white.opacity(0.06))
-                    .frame(height: 5)
-                if percent > 0 {
-                    Capsule()
-                        .fill(color.opacity(weight))
-                        .frame(
-                            width: max(2, geo.size.width * CGFloat(percent) / 100),
-                            height: 5
-                        )
-                        .animation(.strongEaseOut, value: percent)
-                }
-            }
-            .frame(maxHeight: .infinity, alignment: .center)
-        }
-        .frame(height: 5)
-        .frame(maxWidth: .infinity)
-    }
-}
-
-// MARK: - Token-flavored breakdown (usage page)
-
-struct PerModelTokenBreakdown: View {
-    let provider: AlertEngine.Provider
-    /// 5h window for the live provider. Used to step out of the way when
-    /// the API errored — the live tile in the other half already surfaces
-    /// the real error text; we don't fabricate a model breakdown over it.
-    let window: WindowUsage
-
-    @ObservedObject private var costStore = CostStore.shared
-
-    private var rows: [ModelUsageRow] {
-        Array(recentRows(for: provider, store: costStore).prefix(perModelRowLimit))
-    }
-    private var color: Color { providerBrandColor(provider) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            PerModelHeader(trailingHint: "5h")
-
-            if let err = window.error, err != "no data" {
-                Spacer(minLength: 0)
-            } else if rows.isEmpty {
-                Spacer(minLength: 0)
-                Text("no \(providerLowerLabel(provider)) activity in last 5h")
-                    .font(Typography.caption)
-                    .foregroundStyle(.white.opacity(0.4))
-                Spacer(minLength: 0)
-            } else {
-                VStack(spacing: 5) {
-                    ForEach(Array(rows.enumerated()), id: \.element.model) { idx, row in
-                        PerModelTokenRow(
-                            name: row.displayName,
-                            percent: Int((row.percent * 100).rounded()),
-                            tokens: Self.formatTokens(row.tokens),
-                            color: color,
-                            weight: perModelRowWeights[min(idx, perModelRowWeights.count - 1)]
-                        )
-                    }
-                }
-                Spacer(minLength: 0)
-                PerModelTokenFooter(resetAt: window.resetAt)
-            }
+    /// Absolute (tokens or $) for the chosen metric. The bar uses the
+    /// model's own week absolute as its full-track denominator, so 5h
+    /// renders as a sub-portion of the week — never longer. Switching
+    /// from %-within-window to absolute values is what guarantees the
+    /// inclusion property visually (5h is strictly inside week).
+    func recentAbsolute(metric: PerModelBreakdown.Metric) -> Double {
+        guard let recent else { return 0 }
+        switch metric {
+        case .tokens:  return Double(recent.tokens)
+        case .dollars: return recent.dollars
         }
     }
 
-    /// 12_345 → "12K", 1_234_567 → "1.2M". Matches the CostBlock short-form
-    /// vocabulary so the panel uses one set of unit suffixes.
+    func weekAbsolute(metric: PerModelBreakdown.Metric) -> Double {
+        switch metric {
+        case .tokens:  return Double(week.tokens)
+        case .dollars: return week.dollars
+        }
+    }
+
+    /// Trailing-column figure. Always the WEEK absolute — the bar already
+    /// conveys 5h-vs-wk ratio within the row, so the trailing column adds
+    /// cross-row scale (which the per-row bar normalization deliberately
+    /// drops).
+    func trailingValue(metric: PerModelBreakdown.Metric) -> String {
+        switch metric {
+        case .tokens:  return Self.formatTokens(week.tokens)
+        case .dollars: return Self.formatDollars(week.dollars)
+        }
+    }
+
     private static func formatTokens(_ n: Int) -> String {
         if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
         if n >= 1_000     { return "\(n / 1_000)K" }
         return "\(n)"
     }
-}
 
-private struct PerModelTokenRow: View {
-    let name: String
-    let percent: Int
-    let tokens: String
-    let color: Color
-    let weight: Double
-
-    /// Fixed column widths — the whole point of the table is that the digits
-    /// don't dance when polling delivers a new value. SF Mono helps within
-    /// a column but not across them. `nameWidth` is sized for the longest
-    /// realistic display name in either provider's catalog (`o4-mini-high`
-    /// at 11pt medium ≈ 70pt); 76pt buys a small safety margin without
-    /// starving the bar.
-    private static let nameWidth: CGFloat = 76
-    private static let percentWidth: CGFloat = 30
-    private static let tokensWidth: CGFloat = 36
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(name)
-                .font(Typography.label)
-                .foregroundStyle(.white.opacity(0.78))
-                .frame(width: Self.nameWidth, alignment: .leading)
-                .lineLimit(1)
-
-            PerModelBar(percent: percent, color: color, weight: weight)
-
-            Text("\(percent)%")
-                .font(Typography.caption)
-                .foregroundStyle(.white.opacity(percent == 0 ? 0.32 : 0.55))
-                .frame(width: Self.percentWidth, alignment: .trailing)
-
-            Text(tokens)
-                .font(Typography.caption)
-                .foregroundStyle(.white.opacity(percent == 0 ? 0.32 : 0.40))
-                .frame(width: Self.tokensWidth, alignment: .trailing)
-        }
-    }
-}
-
-/// Footer: live reset countdown only. The prototype's "burn rate" line was
-/// a hand-coded stub; without a rolling buffer in UsageStore we can't
-/// compute a real one, and shipping a fabricated number undermines the
-/// rest of the panel.
-private struct PerModelTokenFooter: View {
-    let resetAt: Date?
-
-    var body: some View {
-        // 30s tick is fine — `Duration.compact` only changes at minute /
-        // hour boundaries.
-        TimelineView(.periodic(from: .now, by: 30)) { ctx in
-            HStack(spacing: 6) {
-                Text(resetCaption(now: ctx.date))
-                    .font(Typography.caption)
-                    .foregroundStyle(.white.opacity(0.45))
-                Spacer(minLength: 0)
-            }
-        }
-    }
-
-    private func resetCaption(now: Date) -> String {
-        guard let r = resetAt else { return "5h window" }
-        let delta = max(0, r.timeIntervalSince(now))
-        return "resets in \(Duration.compact(delta))"
-    }
-}
-
-// MARK: - Cost-flavored breakdown (cost page)
-
-struct PerModelCostBreakdown: View {
-    let provider: AlertEngine.Provider
-
-    @ObservedObject private var costStore = CostStore.shared
-
-    /// Full set of rows for the footer total — must include models past
-    /// the display limit so "total · 5h" stays honest. Without this, a
-    /// fourth-and-beyond model that burned real dollars would silently
-    /// disappear from the sum and the footer figure would diverge from
-    /// the cost-page Today figure (when today equals last 5h).
-    ///
-    /// Re-sorted by dollars descending. The upstream `recentByModel`
-    /// orders by tokens (correct for the usage page), but on the cost
-    /// page that's wrong: a cache-heavy model with low billable tokens
-    /// but high spend would drop out of the displayed top-3 in favor of
-    /// a high-token / pennies-of-spend model. Sorting by dollars puts
-    /// the dollars-dominant row at index 0 so the row-weight tapering
-    /// (`perModelRowWeights[0] = 0.85`) actually emphasizes the
-    /// biggest-spend row.
-    private var allRows: [ModelUsageRow] {
-        recentRows(for: provider, store: costStore)
-            .sorted { $0.dollars > $1.dollars }
-    }
-    private var displayedRows: [ModelUsageRow] {
-        Array(allRows.prefix(perModelRowLimit))
-    }
-    private var color: Color { providerBrandColor(provider) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            PerModelHeader(trailingHint: "5h $")
-
-            if allRows.isEmpty {
-                Spacer(minLength: 0)
-                Text("no \(providerLowerLabel(provider)) activity in last 5h")
-                    .font(Typography.caption)
-                    .foregroundStyle(.white.opacity(0.4))
-                Spacer(minLength: 0)
-            } else {
-                VStack(spacing: 5) {
-                    ForEach(Array(displayedRows.enumerated()), id: \.element.model) { idx, row in
-                        PerModelCostRow(
-                            name: row.displayName,
-                            dollars: row.dollars,
-                            color: color,
-                            weight: perModelRowWeights[min(idx, perModelRowWeights.count - 1)]
-                        )
-                    }
-                }
-                Spacer(minLength: 0)
-                PerModelCostFooter(allRows: allRows, displayedCount: displayedRows.count)
-            }
-        }
-    }
-}
-
-/// Cost-page row drops the capsule bar that the token row uses. The bar's
-/// fill metric on the usage page (token share) doesn't translate to the
-/// cost page — a cache-read-heavy model can have ~0 billable tokens but
-/// non-zero dollars, which would render as a near-empty bar next to a
-/// sizable dollar number. The dollar string itself encodes magnitude
-/// unambiguously, so the bar is just visual noise here. Removing it also
-/// frees ~bar width to widen the model-name column for longer ids
-/// (`o4-mini-high` etc.). The brand-tinted dollar caption preserves the
-/// row's color identity.
-private struct PerModelCostRow: View {
-    let name: String
-    let dollars: Double
-    let color: Color
-    let weight: Double
-
-    /// Wider than the token row's 64pt — needed for OpenAI reasoning
-    /// models like `o4-mini-high` and Claude composite ids that
-    /// `prettyModelName` can't shorten further. Stays the same on usage
-    /// rows for visual rhythm; widening only here is fine because the
-    /// usage row has three trailing columns to balance, the cost row
-    /// only one.
-    private static let nameWidth: CGFloat = 100
-    private static let dollarsWidth: CGFloat = 60
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(name)
-                .font(Typography.label)
-                .foregroundStyle(.white.opacity(0.78))
-                .frame(width: Self.nameWidth, alignment: .leading)
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-
-            Text(formatDollars(dollars))
-                .font(Typography.bodyNumber)
-                .foregroundStyle(color.opacity(dollars > 0 ? max(0.55, weight) : 0.32))
-                .frame(width: Self.dollarsWidth, alignment: .trailing)
-        }
-    }
-
-    /// Adaptive precision: under $1 shows two decimals (1¢ resolution);
-    /// under $10 shows one decimal; otherwise round to the nearest dollar
-    /// so the column stays narrow and readable at a glance.
-    private func formatDollars(_ amount: Double) -> String {
+    /// Adaptive precision: under $1 shows two decimals; under $10 shows
+    /// one decimal; otherwise round to the nearest dollar.
+    private static func formatDollars(_ amount: Double) -> String {
         if amount <= 0 { return "$0" }
         if amount < 1   { return String(format: "$%.2f", amount) }
         if amount < 10  { return String(format: "$%.1f", amount) }
@@ -336,38 +141,233 @@ private struct PerModelCostRow: View {
     }
 }
 
-private struct PerModelCostFooter: View {
-    /// All rows (not just the displayed top-N) so the total stays honest
-    /// when a 4th+ model contributed real dollars in the window.
-    let allRows: [ModelUsageRow]
-    let displayedCount: Int
+@MainActor
+private func joinedRows(for provider: AlertEngine.Provider, store: CostStore) -> [JoinedModelRow] {
+    let week = weekRowsList(for: provider, store: store)
+    let recent = recentRows(for: provider, store: store)
+    let recentMap = Dictionary(uniqueKeysWithValues: recent.map { ($0.model, $0) })
+    return week.map { w in
+        JoinedModelRow(
+            model: w.model,
+            displayName: w.displayName,
+            recent: recentMap[w.model],
+            week: w
+        )
+    }
+}
+
+// MARK: - The single breakdown
+
+struct PerModelBreakdown: View {
+    enum Metric { case tokens, dollars }
+
+    let provider: AlertEngine.Provider
+    let metric: Metric
+
+    @ObservedObject private var costStore = CostStore.shared
+
+    private var color: Color { providerBrandColor(provider) }
+
+    /// Joined rows, sorted by the chosen metric within the week window
+    /// (week is the bigger sample so it's the more stable rank), trimmed
+    /// to the display limit. The `weekByModel` upstream is already
+    /// token-sorted so .tokens metric needs no resort; dollars metric
+    /// re-sorts by week-dollar.
+    private var rows: [JoinedModelRow] {
+        let joined = joinedRows(for: provider, store: costStore)
+        let sorted: [JoinedModelRow] = {
+            switch metric {
+            case .tokens:
+                return joined  // already sorted by week tokens desc
+            case .dollars:
+                return joined.sorted { $0.week.dollars > $1.week.dollars }
+            }
+        }()
+        return Array(sorted.prefix(perModelRowLimit))
+    }
 
     var body: some View {
-        let total = allRows.reduce(0.0) { $0 + $1.dollars }
-        // Label adapts: "total · 5h" when every model is on screen,
-        // "all 5 · 5h" when the displayed top-N is hiding rows, so the
-        // user knows the figure isn't just the visible rows summed.
-        let label = allRows.count > displayedCount
-            ? "all \(allRows.count)"
-            : "total"
-        HStack(spacing: 6) {
-            Text(label)
-                .font(Typography.caption)
-                .foregroundStyle(.white.opacity(0.5))
-            Text(formatTotal(total))
-                .font(Typography.bodyNumber)
-                .foregroundStyle(.white.opacity(0.78))
-            Text("· last 5h")
-                .font(Typography.caption)
-                .foregroundStyle(.white.opacity(0.32))
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 6) {
+            header
+
+            if rows.isEmpty {
+                Spacer(minLength: 0)
+                Text("no \(providerLowerLabel(provider)) activity in last 5h or this week")
+                    .font(Typography.caption)
+                    .foregroundStyle(.white.opacity(0.4))
+                Spacer(minLength: 0)
+            } else {
+                VStack(spacing: 5) {
+                    ForEach(Array(rows.enumerated()), id: \.element.model) { idx, row in
+                        PerModelRow(
+                            displayName: row.displayName,
+                            recentAbsolute: row.recentAbsolute(metric: metric),
+                            weekAbsolute: row.weekAbsolute(metric: metric),
+                            trailingValue: row.trailingValue(metric: metric),
+                            color: color,
+                            weight: perModelRowWeights[min(idx, perModelRowWeights.count - 1)]
+                        )
+                    }
+                }
+                Spacer(minLength: 0)
+            }
         }
     }
 
-    private func formatTotal(_ amount: Double) -> String {
-        if amount <= 0 { return "$0" }
-        if amount < 10  { return String(format: "$%.2f", amount) }
-        return String(format: "$%.0f", amount)
+    /// Header: title + tiny legend. The legend is the load-bearing UI
+    /// element here — it's how the user learns that the bright section
+    /// of each bar is "5h" and the dim section is "week". Without it the
+    /// dual-fill bars are a riddle. Swatch opacities are computed against
+    /// the top-row weight (0.85) and the shared dim multiplier so the
+    /// legend reads exactly like the top row's bar — no drift.
+    private var header: some View {
+        let topWeight = perModelRowWeights[0]
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("BY MODEL")
+                .font(Typography.sectionLabel)
+                .tracking(0.6)
+                .foregroundStyle(.white.opacity(0.55))
+            Spacer(minLength: 0)
+            HStack(spacing: 4) {
+                Capsule()
+                    .fill(color.opacity(topWeight))
+                    .frame(width: 8, height: 4)
+                Text("5h")
+                    .font(Typography.caption)
+                    .foregroundStyle(.white.opacity(0.50))
+                    .padding(.trailing, 4)
+                Capsule()
+                    .fill(color.opacity(topWeight * dimFillMultiplier))
+                    .frame(width: 8, height: 4)
+                Text("wk")
+                    .font(Typography.caption)
+                    .foregroundStyle(.white.opacity(0.50))
+            }
+        }
+    }
+}
+
+// MARK: - Row + overlapping bar
+
+private struct PerModelRow: View {
+    let displayName: String
+    /// Absolute (tokens or $) for the model in the last 5h. Always ≤
+    /// `weekAbsolute`. Drives the bright fill length within this row.
+    let recentAbsolute: Double
+    /// Absolute (tokens or $) for the model over the rolling 7d window.
+    /// Defines the row's full track width — bar is normalized per row so
+    /// the dim fill always covers the entire track and the bright fill
+    /// is a strict sub-portion.
+    let weekAbsolute: Double
+    /// Pre-formatted week-absolute (e.g. "12K", "$24.50").
+    let trailingValue: String
+    let color: Color
+    let weight: Double
+
+    /// Fixed column widths — keep digits from dancing as polling delivers
+    /// new values. `nameWidth` sized for the longest realistic display
+    /// name in either provider's catalog (`o4-mini-high` at 11pt medium
+    /// ≈ 70pt); 84pt buys a small safety margin without starving the bar.
+    /// `trailingWidth` sized for "$24.50" / "1.5M" worst case.
+    private static let nameWidth: CGFloat = 84
+    private static let trailingWidth: CGFloat = 56
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(displayName)
+                .font(Typography.label)
+                .foregroundStyle(.white.opacity(0.78))
+                .frame(width: Self.nameWidth, alignment: .leading)
+                .lineLimit(1)
+
+            OverlapBar(
+                recentAbsolute: recentAbsolute,
+                weekAbsolute: weekAbsolute,
+                color: color,
+                weight: weight
+            )
+
+            Text(trailingValue)
+                .font(Typography.caption)
+                .foregroundStyle(.white.opacity(weekAbsolute > 0 ? 0.55 : 0.32))
+                .frame(width: Self.trailingWidth, alignment: .trailing)
+        }
+    }
+}
+
+/// Single-track bar with TWO overlapping fills, normalized PER ROW. The
+/// model's own week absolute defines the full track width, so:
+///   - Dim fill (week)      = full track width whenever the model had
+///                            any week activity (the "100% of this
+///                            model's week" baseline).
+///   - Bright fill (5h)     = `recentAbsolute / weekAbsolute` of the
+///                            track. Always ≤ the dim fill because
+///                            `recent ≤ week` (5h is a strict subset of
+///                            the rolling 7-day window).
+///
+/// Drawing order matters: track → week (dim, behind) → 5h (bright, on
+/// top). When 5h is small, the dim bar peeks out behind the bright tip
+/// and trails to the right edge. When the model has only week activity
+/// (no 5h), only the dim bar shows.
+///
+/// Per-row normalization deliberately drops cross-row scale; the heavy
+/// hitter doesn't pin everyone else to a single pixel, and the trailing
+/// column carries the absolute scale (4.1M vs 27K vs 184) so the user
+/// can still compare across rows.
+private struct OverlapBar: View {
+    let recentAbsolute: Double
+    let weekAbsolute: Double
+    let color: Color
+    /// Modulates both fill opacities so the top model dominates and
+    /// lesser rows recede. Independent of value so a tiny-but-active
+    /// row still reads as "live".
+    let weight: Double
+
+    /// Slim track (5pt) — keeps the row line height to ~14pt so 4 rows
+    /// fit vertically alongside the header in ~90pt.
+    private static let barHeight: CGFloat = 5
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            // Row-local fraction: 5h as a portion of THIS model's week.
+            // Clamp to [0, 1]; in practice recent ≤ week always, but
+            // float division makes the explicit clamp cheap insurance.
+            let recentFrac: CGFloat = weekAbsolute > 0
+                ? CGFloat(min(1.0, max(0.0, recentAbsolute / weekAbsolute)))
+                : 0
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.06))
+                    .frame(height: Self.barHeight)
+                if weekAbsolute > 0 {
+                    // Floor the dim opacity so the 4th-row track baseline
+                    // stays visible — without this, row 3's weight 0.30
+                    // would render the dim fill at 0.09 opacity, below the
+                    // perceptual threshold against the panel black. The
+                    // 0.15 floor keeps the week-baseline readable at every
+                    // row index without making the top-row bars feel any
+                    // less dominant (top row = weight 0.85 → 0.255, well
+                    // above the floor).
+                    let dimOpacity = max(weight * dimFillMultiplier, 0.15)
+                    Capsule()
+                        .fill(color.opacity(dimOpacity))
+                        .frame(width: w, height: Self.barHeight)
+                }
+                if recentFrac > 0 {
+                    Capsule()
+                        .fill(color.opacity(weight))
+                        .frame(
+                            width: max(2, w * recentFrac),
+                            height: Self.barHeight
+                        )
+                        .animation(.strongEaseOut, value: recentFrac)
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
+        }
+        .frame(height: Self.barHeight)
+        .frame(maxWidth: .infinity)
     }
 }
 

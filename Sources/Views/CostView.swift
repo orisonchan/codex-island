@@ -13,6 +13,7 @@ import SwiftUI
 struct CostView: View {
     @ObservedObject private var store = CostStore.shared
     @ObservedObject private var visibility = ProviderVisibilityStore.shared
+    @ObservedObject private var stylePref = CostStylePref.shared
 
     var body: some View {
         let claudeOn = visibility.claudeVisible
@@ -33,12 +34,12 @@ struct CostView: View {
                           loading: store.claudeLoading, provider: .claude,
                           centerWhenSingle: true)
                 hairline
-                PerModelCostBreakdown(provider: .claude)
+                breakdown(for: .claude)
                     .frame(maxWidth: .infinity, alignment: .top)
                     .padding(.horizontal, 12)
                     .transition(breakdownTransition)
             case (false, true):
-                PerModelCostBreakdown(provider: .codex)
+                breakdown(for: .codex)
                     .frame(maxWidth: .infinity, alignment: .top)
                     .padding(.horizontal, 12)
                     .transition(breakdownTransition)
@@ -55,6 +56,23 @@ struct CostView: View {
         .padding(.horizontal, 22)
         .padding(.top, 12)
         .padding(.bottom, 6)
+    }
+
+    /// Cost-page breakdown swaps metric to follow the visible tile: when
+    /// the user has cycled to TOKENS (`stylePref.style == .tokens`), show
+    /// per-model token volume; otherwise show per-model dollars. Both
+    /// branches return the SAME view type and same row layout, so the
+    /// metric swap re-uses the existing identity-based crossfade
+    /// SwiftUI gives us inside `withAnimation` blocks (no explicit
+    /// `.transition` needed here — only the (both-on)→(single) swap
+    /// uses `breakdownTransition` to morph between completely different
+    /// view trees).
+    private func breakdown(for provider: AlertEngine.Provider) -> some View {
+        let metric: PerModelBreakdown.Metric =
+            stylePref.style == .tokens ? .tokens : .dollars
+        return PerModelBreakdown(provider: provider, metric: metric)
+            .id(metric)
+            .transition(.chartSwap.animation(.chartSwap))
     }
 
     /// Mirror of `UsageView.breakdownTransition` — kept inline (not extracted

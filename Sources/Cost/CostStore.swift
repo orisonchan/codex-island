@@ -160,10 +160,13 @@ final class CostStore: ObservableObject {
         let monthStart = cal.date(from: cal.dateComponents([.year, .month], from: now)) ?? startOfDay
         let currentHour = cal.dateComponents([.hour], from: now).hour ?? 0
         let currentDay = (cal.dateComponents([.day], from: now).day ?? 1) - 1
-        // Rolling window for per-model breakdown — approximates Anthropic's
-        // 5h rate-limit window. We don't know the server's exact window
-        // alignment, so "last 5 hours" is the practical proxy.
+        // Rolling windows for per-model breakdown — approximate the live
+        // tile windows. We don't know the server's exact window alignment
+        // for either, so "last N hours from now" is the practical proxy.
+        // 5h matches Anthropic's rate-limit window; 7d matches both
+        // providers' weekly tile.
         let recentStart = now.addingTimeInterval(-5 * 3600)
+        let weekStart = now.addingTimeInterval(-7 * 24 * 3600)
 
         var todayDollars = 0.0, todayTokens = 0, todayBillable = 0
         var monthDollars = 0.0, monthTokens = 0, monthBillable = 0
@@ -181,9 +184,21 @@ final class CostStore: ObservableObject {
         // cost-page shows dollars.
         var recentTokensByModel: [String: Int] = [:]
         var recentDollarsByModel: [String: Double] = [:]
+        // Same shape, weekly window. Two windows in one pass costs an
+        // extra `>=` per event — cheap relative to JSON parsing upstream.
+        var weekTokensByModel: [String: Int] = [:]
+        var weekDollarsByModel: [String: Double] = [:]
 
+        // Drop events older than every window's start. Using `min(...)`
+        // matters here because the rolling 7-day window straddles month
+        // boundaries: on May 3, weekStart is Apr 26, but `monthStart` is
+        // May 1, so a `>= monthStart` guard would silently filter out
+        // Apr 26–30 from the weekly slice. The 5h slice never had this
+        // problem (5h ⊂ today ⊂ month), but adding weekly broke the
+        // assumption — keep the broader guard.
+        let earliestStart = min(monthStart, weekStart)
         for event in events {
-            guard event.timestamp >= monthStart else { continue }
+            guard event.timestamp >= earliestStart else { continue }
             let cost = Pricing.cost(for: event)
             // Two parallel running totals: `tokens` is the wire-level sum
             // (ccusage parity); `billable` is input + output only, matching
@@ -194,12 +209,17 @@ final class CostStore: ObservableObject {
             let tokens = billable + event.cacheCreationTokens + event.cacheReadTokens
             let isUnpriced = tokens > 0 && !Pricing.isKnown(event.model)
 
-            monthDollars += cost
-            monthTokens += tokens
-            monthBillable += billable
-            let day = (cal.dateComponents([.day], from: event.timestamp).day ?? 1) - 1
-            if day < dailyBuckets.count { dailyBuckets[day] += cost }
-            if isUnpriced { monthUnknown.insert(event.model) }
+            // Month aggregation gated separately now that the outer guard
+            // is `min(monthStart, weekStart)` (so previous-month events
+            // can reach the weekly slice).
+            if event.timestamp >= monthStart {
+                monthDollars += cost
+                monthTokens += tokens
+                monthBillable += billable
+                let day = (cal.dateComponents([.day], from: event.timestamp).day ?? 1) - 1
+                if day < dailyBuckets.count { dailyBuckets[day] += cost }
+                if isUnpriced { monthUnknown.insert(event.model) }
+            }
 
             // Today is a strict subset of month
             if event.timestamp >= startOfDay {
@@ -211,38 +231,38 @@ final class CostStore: ObservableObject {
                 if isUnpriced { todayUnknown.insert(event.model) }
             }
 
-            // 5h rolling window slice — strict subset of today.
-            if event.timestamp >= recentStart {
+            // Weekly rolling window slice — superset of recent, subset of
+            // month (when month is short). Compute canonical name once and
+            // reuse for the 5h slice to avoid double work.
+            if event.timestamp >= weekStart {
                 let canon = Pricing.canonicalModelName(event.model)
                 if billable > 0 {
-                    recentTokensByModel[canon, default: 0] += billable
+                    weekTokensByModel[canon, default: 0] += billable
                 }
                 if cost > 0 {
-                    recentDollarsByModel[canon, default: 0] += cost
+                    weekDollarsByModel[canon, default: 0] += cost
+                }
+
+                // 5h rolling window slice — strict subset of weekly.
+                if event.timestamp >= recentStart {
+                    if billable > 0 {
+                        recentTokensByModel[canon, default: 0] += billable
+                    }
+                    if cost > 0 {
+                        recentDollarsByModel[canon, default: 0] += cost
+                    }
                 }
             }
         }
 
-        let recentTotalTokens = recentTokensByModel.values.reduce(0, +)
-        let allCanonicalModels = Set(recentTokensByModel.keys).union(recentDollarsByModel.keys)
-        let recentRows: [ModelUsageRow] = allCanonicalModels.map { canon in
-            let tokens = recentTokensByModel[canon] ?? 0
-            let dollars = recentDollarsByModel[canon] ?? 0
-            return ModelUsageRow(
-                model: canon,
-                displayName: prettyModelName(canon),
-                tokens: tokens,
-                dollars: dollars,
-                percent: recentTotalTokens > 0 ? Double(tokens) / Double(recentTotalTokens) : 0
-            )
-        }
-        .sorted {
-            // Tokens primary, dollars secondary — handles cache-read-only
-            // rows (zero billable tokens, non-zero dollars) by sinking
-            // them to the bottom but not disappearing.
-            if $0.tokens != $1.tokens { return $0.tokens > $1.tokens }
-            return $0.dollars > $1.dollars
-        }
+        let recentRows = Self.modelRows(
+            tokensByModel: recentTokensByModel,
+            dollarsByModel: recentDollarsByModel
+        )
+        let weekRows = Self.modelRows(
+            tokensByModel: weekTokensByModel,
+            dollarsByModel: weekDollarsByModel
+        )
 
         return ProviderCost(
             today: CostWindow(
@@ -263,8 +283,41 @@ final class CostStore: ObservableObject {
                 error: nil,
                 unknownModels: monthUnknown.sorted()
             ),
-            recentByModel: recentRows
+            recentByModel: recentRows,
+            weekByModel: weekRows
         )
+    }
+
+    /// Build sorted `ModelUsageRow`s from the two parallel per-model maps
+    /// for a given window. Shared between the 5h and weekly slices so
+    /// both stay perfectly consistent in shape, sorting, and percent-share
+    /// computation.
+    nonisolated private static func modelRows(
+        tokensByModel: [String: Int],
+        dollarsByModel: [String: Double]
+    ) -> [ModelUsageRow] {
+        let totalTokens = tokensByModel.values.reduce(0, +)
+        let totalDollars = dollarsByModel.values.reduce(0, +)
+        let canonicals = Set(tokensByModel.keys).union(dollarsByModel.keys)
+        return canonicals.map { canon in
+            let tokens = tokensByModel[canon] ?? 0
+            let dollars = dollarsByModel[canon] ?? 0
+            return ModelUsageRow(
+                model: canon,
+                displayName: prettyModelName(canon),
+                tokens: tokens,
+                dollars: dollars,
+                percent: totalTokens > 0 ? Double(tokens) / Double(totalTokens) : 0,
+                dollarPercent: totalDollars > 0 ? dollars / totalDollars : 0
+            )
+        }
+        .sorted {
+            // Tokens primary, dollars secondary — handles cache-read-only
+            // rows (zero billable tokens, non-zero dollars) by sinking
+            // them to the bottom but not disappearing.
+            if $0.tokens != $1.tokens { return $0.tokens > $1.tokens }
+            return $0.dollars > $1.dollars
+        }
     }
 
     /// Pretty-print the canonical model id for UI rows. Falls back to the

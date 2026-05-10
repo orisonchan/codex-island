@@ -33,14 +33,12 @@ struct UsageView: View {
                 ChartsBlock(color: IslandColor.claude, usage: store.claude,
                             style: style, seed: 1)
                 hairline
-                PerModelTokenBreakdown(provider: .claude,
-                                       window: store.claude.fiveHour)
+                PerModelBreakdown(provider: .claude, metric: .tokens)
                     .frame(maxWidth: .infinity, alignment: .top)
                     .padding(.horizontal, 12)
                     .transition(breakdownTransition)
             case (false, true):
-                PerModelTokenBreakdown(provider: .codex,
-                                       window: store.codex.fiveHour)
+                PerModelBreakdown(provider: .codex, metric: .tokens)
                     .frame(maxWidth: .infinity, alignment: .top)
                     .padding(.horizontal, 12)
                     .transition(breakdownTransition)

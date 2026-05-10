@@ -51,10 +51,14 @@ struct ModelUsageRow {
     /// reads "what this model is actually costing me", not "what hit
     /// the rate-limit". Cost-page consumers display this directly.
     let dollars: Double
-    /// Share of the window's total billable tokens, 0...1. Used as
-    /// the bar-fill metric on both the usage page (token share) and
-    /// the cost page (so the bar visualization stays consistent).
+    /// Share of the window's total billable tokens, 0...1. Drives the
+    /// bar fill on the usage breakdown.
     let percent: Double
+    /// Share of the window's total dollar spend, 0...1. Drives the bar
+    /// fill on the cost breakdown — different from `percent` because a
+    /// cache-read-heavy model can have ~0 billable tokens but a sizable
+    /// dollar contribution.
+    let dollarPercent: Double
 }
 
 /// Per-provider cost summary: today + month-to-date in calendar-local time.
@@ -62,8 +66,12 @@ struct ProviderCost {
     var today: CostWindow
     var month: CostWindow
     /// Per-model breakdown over the last ~5 hours, sorted by tokens
-    /// descending. Empty when the provider has no recent events.
+    /// descending. Empty when the provider has no recent events. Approximates
+    /// the rate-limited 5h window used by the live tiles.
     var recentByModel: [ModelUsageRow] = []
+    /// Per-model breakdown over the rolling last 7 days, sorted by tokens
+    /// descending. Approximates the weekly window used by the live tiles.
+    var weekByModel: [ModelUsageRow] = []
 
     static let empty = ProviderCost(
         today: CostWindow(
@@ -75,7 +83,8 @@ struct ProviderCost {
             label: CostBucketing.currentMonthLabel(), error: nil,
             unknownModels: []
         ),
-        recentByModel: []
+        recentByModel: [],
+        weekByModel: []
     )
 
     /// Placeholder values shown when a provider is toggled off in Settings.
@@ -93,6 +102,7 @@ struct ProviderCost {
             label: CostBucketing.currentMonthLabel(), error: nil,
             unknownModels: []
         ),
-        recentByModel: []
+        recentByModel: [],
+        weekByModel: []
     )
 }
