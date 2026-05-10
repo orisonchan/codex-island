@@ -438,7 +438,11 @@ private struct PeekPillOverlay: View {
         .offset(x: pillsVisible ? 0 : (provider == .claude ? -6 : 6))
         .allowsHitTesting(false)
         .accessibilityLabel(peekLabel(for: window, provider: providerLabel))
-        .accessibilityHidden(!isVisible)
+        // Mirror the visual opacity gate exactly — both `pillsVisible` and
+        // `isVisible` must be true for the pill to render. Keying the
+        // accessibility hide on only `isVisible` lets VoiceOver reach a
+        // pill that is visually invisible during the peek-out lifecycle.
+        .accessibilityHidden(!(pillsVisible && isVisible))
     }
 
     private var isVisible: Bool {
