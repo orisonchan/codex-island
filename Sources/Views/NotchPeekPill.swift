@@ -1,47 +1,38 @@
 import SwiftUI
 
-/// Glance-state percentage pill that lives outboard of each provider logo
+/// Glance-state token pill that lives outboard of each provider logo
 /// while the island is in `.peek`. No background of its own — text painted
 /// directly on the dark silhouette, like the logos.
 ///
-/// Renders one of three states:
-///   • value:    "32% · 2h"  (active countdown) or "0% · 5h" (window-length
-///               fallback at lower opacity when no active resetAt is known)
-///   • loading:  small pulsing dot (only when `loading && usedPercent == 0`)
-///   • errored:  "—%"         (when error is set and we have no value)
-///
-/// Stateless — pure function of inputs. The parent owns visibility/animation.
+/// Renders the 5-hour token volume (e.g. "121M · 5h") drawn from local
+/// session logs — same source as the Usage page, so the glance value
+/// matches the expanded panel. Stateless — pure function of inputs. The
+/// parent owns visibility/animation.
 struct NotchPeekPill: View {
-    let usage: WindowUsage
+    let tokens: Int
     let loading: Bool
     let tint: Color
     let alignment: HorizontalAlignment
-    var severity: AlertEngine.Severity = .none
+    let windowLabel: String
 
     var body: some View {
         Group {
             if showSpinner {
                 LoadingDot()
-            } else if showDash {
-                Text("—%")
-                    .font(Typography.bodyNumber)
-                    .foregroundStyle(.white.opacity(0.40))
             } else {
                 HStack(spacing: 4) {
                     if alignment == .leading {
-                        // Left pill: percent on the outside (left), hours
-                        // remaining on the inside (toward the notch).
-                        if severity != .none { warningGlyph }
-                        percentLabel
+                        // Left pill: token count on the outside (left),
+                        // window label on the inside (toward the notch).
+                        tokenLabel
                         separator
-                        resetLabel
+                        windowLabelView
                     } else {
-                        // Right pill: mirrored so percent stays on the
-                        // outside (right) and hours remaining stays inside.
-                        resetLabel
+                        // Right pill: mirrored so the token count stays
+                        // on the outside (right) and the window label inside.
+                        windowLabelView
                         separator
-                        percentLabel
-                        if severity != .none { warningGlyph }
+                        tokenLabel
                     }
                 }
             }
@@ -51,16 +42,10 @@ struct NotchPeekPill: View {
         .fixedSize()
     }
 
-    private var warningGlyph: some View {
-        Text("⚠")
+    private var tokenLabel: some View {
+        Text(tokenText)
             .font(Typography.bodyNumber)
-            .foregroundStyle(effectiveTint)
-    }
-
-    private var percentLabel: some View {
-        Text(percentText)
-            .font(Typography.bodyNumber)
-            .foregroundStyle(effectiveTint)
+            .foregroundStyle(tint)
     }
 
     private var separator: some View {
@@ -69,61 +54,24 @@ struct NotchPeekPill: View {
             .foregroundStyle(.white.opacity(0.40))
     }
 
-    /// Lower opacity on the fallback differentiates a passive "5-hour
-    /// window" label from an active "5h until reset" countdown — same
-    /// glyph shape, weaker visual presence.
-    private var resetLabel: some View {
-        Text(resetText ?? "5h")
+    private var windowLabelView: some View {
+        Text(windowLabel)
             .font(Typography.bodyNumber)
-            .foregroundStyle(.white.opacity(resetText == nil ? 0.45 : 0.70))
+            .foregroundStyle(.white.opacity(0.70))
     }
 
-    /// Brand tint by default; alert color when above threshold so the
-    /// percent + warning glyph share a consistent severity color.
-    private var effectiveTint: Color {
-        switch severity {
-        case .none:     return tint
-        case .warning:  return IslandColor.alertAmber
-        case .critical: return IslandColor.alertRed
-        }
+    /// "—" when there's no token activity yet (cold start, no logs);
+    /// otherwise the compact coefficient + suffix, e.g. "121M".
+    private var tokenText: String {
+        guard tokens > 0 else { return "—" }
+        return TokenFormat.value(tokens) + TokenFormat.unit(tokens)
     }
 
-    private var hasValue: Bool {
-        usage.usedPercent > 0 || usage.error == nil
-    }
-
-    /// Spinner only fires for the cold-start case (loading AND we have nothing
-    /// to show). If we have a prior value, keep showing it during refresh —
-    /// same principle as UsageStore.isErrorOnly's "don't blank the panel" rule.
+    /// Spinner only fires for the cold-start case (loading AND we have
+    /// nothing to show). If we have a prior value, keep showing it during
+    /// refresh — same "don't blank the panel" principle as the Usage page.
     private var showSpinner: Bool {
-        loading && usage.usedPercent == 0 && usage.error == nil
-    }
-
-    private var showDash: Bool {
-        // "no data" is our sentinel for "API returned null for this window"
-        // (typically a fresh 5h period before the first OAuth call lands).
-        // Treat it as a passive non-error so the pill still renders with
-        // the 5h window-length fallback instead of collapsing to "—%".
-        guard let err = usage.error, err != "no data" else { return false }
-        return usage.usedPercent == 0
-    }
-
-    private var percentText: String {
-        "\(usage.percentInt)%"
-    }
-
-    /// `Nh` when ≥ 1h remaining, `Nm` under 1h. Returns nil if there's no
-    /// resetAt or the reset has already passed (happens transiently when a
-    /// window rolls over before the next fetch lands).
-    private var resetText: String? {
-        guard let resetAt = usage.resetAt else { return nil }
-        let remaining = resetAt.timeIntervalSinceNow
-        guard remaining > 0 else { return nil }
-        if remaining >= 3600 {
-            return "\(Int((remaining / 3600).rounded(.down)))h"
-        } else {
-            return "\(max(1, Int((remaining / 60).rounded(.down))))m"
-        }
+        loading && tokens == 0
     }
 }
 

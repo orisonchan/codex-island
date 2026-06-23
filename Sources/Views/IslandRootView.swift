@@ -480,27 +480,26 @@ private struct LogoOverlay: View {
     }
 }
 
-/// Per-provider peek pill overlay. Observes ProviderVisibilityStore,
-/// UsageStore, and AlertEngine — but not CostStore, so a Codex log
-/// scan completing doesn't re-render the pill that has no cost data
-/// in it.
+/// Per-provider peek pill overlay. Reads token volume (last 5h) from
+/// local session logs via CostStore — same source as the Usage page — so
+/// the glance value matches what the user sees on expand. Token count
+/// follows the user's TokenCountMode.
 private struct PeekPillOverlay: View {
     let provider: AlertEngine.Provider
     let topPadding: CGFloat
     let pillsVisible: Bool
 
     @ObservedObject private var visibility = ProviderVisibilityStore.shared
-    @ObservedObject private var usageStore = UsageStore.shared
-    @ObservedObject private var alerts = AlertEngine.shared
+    @ObservedObject private var costStore = CostStore.shared
+    @ObservedObject private var tokenMode = TokenCountModeStore.shared
 
     var body: some View {
-        let window = currentWindow
         NotchPeekPill(
-            usage: window,
-            loading: usageStore.loading,
+            tokens: tokens,
+            loading: loading,
             tint: tint,
             alignment: provider == .claude ? .leading : .trailing,
-            severity: severity
+            windowLabel: L10n.tr("5h")
         )
         .padding(provider == .claude ? .leading : .trailing, 14)
         .padding(.top, topPadding)
@@ -514,7 +513,7 @@ private struct PeekPillOverlay: View {
         .animation(.openMorph, value: isVisible)
         .offset(x: pillsVisible ? 0 : (provider == .claude ? -6 : 6))
         .allowsHitTesting(false)
-        .accessibilityLabel(peekLabel(for: window, provider: providerLabel))
+        .accessibilityLabel(peekLabel)
         // Mirror the visual opacity gate exactly — both `pillsVisible` and
         // `isVisible` must be true for the pill to render. Keying the
         // accessibility hide on only `isVisible` lets VoiceOver reach a
@@ -526,18 +525,16 @@ private struct PeekPillOverlay: View {
         visibility.effectiveVisible(provider: provider)
     }
 
-    private var currentWindow: WindowUsage {
-        switch provider {
-        case .claude: return usageStore.claude.fiveHour
-        case .codex:  return usageStore.codex.fiveHour
+    private var tokens: Int {
+        let cost = provider == .claude ? costStore.claude : costStore.codex
+        switch tokenMode.mode {
+        case .all:      return cost.recentTokens
+        case .billable: return cost.recentBillableTokens
         }
     }
 
-    private var severity: AlertEngine.Severity {
-        switch provider {
-        case .claude: return alerts.claudeSeverity
-        case .codex:  return alerts.codexSeverity
-        }
+    private var loading: Bool {
+        provider == .claude ? costStore.claudeLoading : costStore.codexLoading
     }
 
     private var tint: Color {
@@ -554,19 +551,12 @@ private struct PeekPillOverlay: View {
         }
     }
 
-    private func peekLabel(for window: WindowUsage, provider: String) -> String {
-        if window.error != nil && window.usedPercent == 0 {
-            return L10n.tr("%@: no data for 5-hour window", provider)
+    private var peekLabel: String {
+        if tokens <= 0 {
+            return L10n.tr("%@: no token data for 5-hour window", providerLabel)
         }
-        let pct = window.percentInt
-        guard let resetAt = window.resetAt else {
-            return L10n.tr("%@: %d percent of 5-hour window used", provider, pct)
-        }
-        let remaining = max(0, resetAt.timeIntervalSinceNow)
-        let resetPhrase: String = remaining >= 3600
-            ? L10n.tr("resets in %d hours", Int((remaining / 3600).rounded(.down)))
-            : L10n.tr("resets in %d minutes", max(1, Int((remaining / 60).rounded(.down))))
-        return L10n.tr("%@: %d percent of 5-hour window used, %@", provider, pct, resetPhrase)
+        return L10n.tr("%@: %@%@ tokens in last 5 hours",
+                       providerLabel, TokenFormat.value(tokens), TokenFormat.unit(tokens))
     }
 }
 
