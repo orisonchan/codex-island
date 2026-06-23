@@ -1,9 +1,15 @@
 import SwiftUI
 import AppKit
 
-/// Usage data row. The chrome (provider titles, footer chip + page dots +
-/// sync status) lives in `PanelHeader` / `PanelFooter` so it stays fixed
-/// while this row swipes between usage and cost screens.
+/// Usage data row — token volume over the last 5h / 7d, drawn from local
+/// session logs (same source as the Cost screen) rather than any
+/// subscription quota. The chrome (provider titles, footer chip + page
+/// dots + sync status) lives in `PanelHeader` / `PanelFooter` so it stays
+/// fixed while this row swipes between usage and cost screens.
+///
+/// Each tile shows absolute token usage as a fraction of a user-configured
+/// threshold (`UsageThresholdStore`) so the existing percentage-bound
+/// chart styles keep working without a subscription quota.
 ///
 /// Branches on `(claudeOn, codexOn)` from `ProviderVisibilityStore`:
 ///   - both on:  two `ChartsBlock`s with a hairline divider (default).
@@ -11,7 +17,7 @@ import AppKit
 ///               per-model token breakdown filling the freed half.
 ///   - both off: a centered `BothHiddenPlaceholder`.
 struct UsageView: View {
-    @ObservedObject private var store = UsageStore.shared
+    @ObservedObject private var costStore = CostStore.shared
     @ObservedObject private var pref = StylePref.shared
     @ObservedObject private var visibility = ProviderVisibilityStore.shared
 
@@ -24,13 +30,13 @@ struct UsageView: View {
         HStack(spacing: 0) {
             switch (claudeOn, codexOn) {
             case (true, true):
-                ChartsBlock(color: IslandColor.claude, usage: store.claude,
+                ChartsBlock(color: IslandColor.claude, cost: costStore.claude,
                             style: style, seed: 1)
                 hairline
-                ChartsBlock(color: IslandColor.codex, usage: store.codex,
+                ChartsBlock(color: IslandColor.codex, cost: costStore.codex,
                             style: style, seed: 3)
             case (true, false):
-                ChartsBlock(color: IslandColor.claude, usage: store.claude,
+                ChartsBlock(color: IslandColor.claude, cost: costStore.claude,
                             style: style, seed: 1)
                 hairline
                 PerModelBreakdown(provider: .claude, metric: .tokens)
@@ -43,7 +49,7 @@ struct UsageView: View {
                     .padding(.horizontal, 12)
                     .transition(breakdownTransition)
                 hairline
-                ChartsBlock(color: IslandColor.codex, usage: store.codex,
+                ChartsBlock(color: IslandColor.codex, cost: costStore.codex,
                             style: style, seed: 3)
             case (false, false):
                 BothHiddenPlaceholder()
@@ -77,62 +83,37 @@ struct UsageView: View {
 
 struct ChartsBlock: View {
     let color: Color
-    let usage: AppUsage
+    let cost: ProviderCost
     let style: ChartStyle
     let seed: Int
 
-    /// Treat the block as needing re-auth when both windows are stuck on the
-    /// scope-insufficient sentinel. Either tile alone could be a transient
-    /// per-window failure, but matching pair = the underlying token genuinely
-    /// lacks the required scope.
-    private var needsReauth: Bool {
-        usage.fiveHour.error == ClaudeCredentials.reauthRequiredMessage
-            && usage.weekly.error == ClaudeCredentials.reauthRequiredMessage
-    }
+    @ObservedObject private var thresholds = UsageThresholdStore.shared
+    @ObservedObject private var tokenMode = TokenCountModeStore.shared
 
     var body: some View {
         VStack(spacing: 6) {
             HStack(spacing: 18) {
                 ChartTile(style: style, color: color, labelKey: "5h",
-                          window: usage.fiveHour, seed: seed)
+                          tokens: displayed(cost.recentTokens, cost.recentBillableTokens),
+                          threshold: thresholds.fiveHour, seed: seed)
                 ChartTile(style: style, color: color, labelKey: "week",
-                          window: usage.weekly, seed: seed + 1)
-            }
-            if needsReauth && ClaudeCredentials.canPromptReauth() {
-                ReauthButton()
+                          tokens: displayed(cost.weekTokens, cost.weekBillableTokens),
+                          threshold: thresholds.sevenDay, seed: seed + 1)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.horizontal, 12)
     }
-}
 
-/// Inline action shown below the Claude tiles when the keychain token is
-/// missing the scope the usage endpoint now requires. Spawns
-/// `claude auth login` and polls for the keychain to update — the chip
-/// recovers on its own when the new scoped token lands.
-struct ReauthButton: View {
-    @ObservedObject private var store = UsageStore.shared
-    @State private var hovered = false
-
-    var body: some View {
-        Button {
-            store.reauthenticateClaude()
-        } label: {
-            Text(store.claudeReauthInProgress ? L10n.tr("waiting for browser…") : L10n.tr("Re-authenticate"))
-                .font(Typography.label)
-                .foregroundStyle(.white.opacity(hovered && !store.claudeReauthInProgress ? 0.95 : 0.72))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(.white.opacity(hovered && !store.claudeReauthInProgress ? 0.08 : 0.04))
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 5))
+    /// Honors the user's TokenCountMode: `.all` = wire-level (cache
+    /// included, ccusage parity); `.billable` = input + output only,
+    /// matching Anthropic's claude.ai stats panel. Mirrors
+    /// `CostTile.displayedTokens`.
+    private func displayed(_ all: Int, _ billable: Int) -> Int {
+        switch tokenMode.mode {
+        case .all:      return all
+        case .billable: return billable
         }
-        .buttonStyle(.plain)
-        .disabled(store.claudeReauthInProgress)
-        .onHover { hovered = $0 }
     }
 }
 
@@ -140,7 +121,11 @@ struct ChartTile: View {
     let style: ChartStyle
     let color: Color
     let labelKey: String
-    let window: WindowUsage
+    /// Token usage in this window, already flavored by TokenCountMode
+    /// upstream (`ChartsBlock.displayed`).
+    let tokens: Int
+    /// Configured 100% mark for this window (5h or 7d threshold).
+    let threshold: Int
     let seed: Int
 
     /// Locked tile height across all 5 styles so the panel size is
@@ -148,17 +133,19 @@ struct ChartTile: View {
     private static let tileHeight: CGFloat = 96
 
     var body: some View {
-        let value = window.usedPercent * 100   // 0-100
-        let sub = subCaption()
+        let pct = percent
+        let tokenText = TokenFormat.value(tokens)
+        let tokenUnit = TokenFormat.unit(tokens)
         let label = L10n.tr(labelKey)
+        let sub = "\(Int(pct.rounded()))%"
 
         Group {
             switch style {
-            case .ring:    RingChart(value: value, color: color, label: label, sub: sub)
-            case .bar:     BarChart(value: value, color: color, label: label, sub: sub)
-            case .stepped: SteppedChart(value: value, color: color, label: label, sub: sub)
-            case .numeric: NumericChart(value: value, color: color, label: label, sub: compactSubCaption())
-            case .spark:   SparkChart(value: value, color: color, label: label, sub: sub, seed: seed)
+            case .ring:    RingChart(value: pct, color: color, label: label, sub: sub, tokenText: tokenText, tokenUnit: tokenUnit)
+            case .bar:     BarChart(value: pct, color: color, label: label, sub: sub, tokenText: tokenText, tokenUnit: tokenUnit)
+            case .stepped: SteppedChart(value: pct, color: color, label: label, sub: sub, tokenText: tokenText, tokenUnit: tokenUnit)
+            case .numeric: NumericChart(value: pct, color: color, label: label, sub: sub, tokenText: tokenText, tokenUnit: tokenUnit)
+            case .spark:   SparkChart(value: pct, color: color, label: label, sub: sub, seed: seed, tokenText: tokenText, tokenUnit: tokenUnit)
             }
         }
         .id(style)
@@ -169,47 +156,16 @@ struct ChartTile: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .frame(height: Self.tileHeight)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(L10n.tr("%@, %d%%", label, Int(value)))
-        .accessibilityValue(subCaption())
+        .accessibilityLabel(L10n.tr("%@, %@%@ tokens", label, tokenText, tokenUnit))
+        .accessibilityValue(sub)
     }
 
-    private func subCaption() -> String {
-        if let r = window.resetAt {
-            let delta = max(0, r.timeIntervalSinceNow)
-            return L10n.tr("resets in %@", Duration.compact(delta))
-        }
-        // "no data" is our internal sentinel for "API returned null for this
-        // window" — most commonly a brand-new 5h period before the first
-        // OAuth call lands. Hide it so the tile reads as a passive
-        // window-context cue (the "5h"/"week" header label communicates the
-        // window type) instead of looking broken. Real errors still surface.
-        if let err = window.error, err != "no data" {
-            // Suppress the scope-insufficient text when the inline re-auth
-            // button is going to appear below the tiles — otherwise the same
-            // remediation hint reads twice (caption + button label). Users
-            // without a discoverable `claude` binary still get the raw text
-            // so they know the manual fix.
-            if err == ClaudeCredentials.reauthRequiredMessage,
-               ClaudeCredentials.canPromptReauth() {
-                return ""
-            }
-            return err
-        }
-        return ""
-    }
-
-    private func compactSubCaption() -> String {
-        if let r = window.resetAt {
-            let delta = max(0, r.timeIntervalSinceNow)
-            return "↻ " + Duration.compact(delta)
-        }
-        if let err = window.error, err != "no data" {
-            if err == ClaudeCredentials.reauthRequiredMessage,
-               ClaudeCredentials.canPromptReauth() {
-                return ""
-            }
-            return err
-        }
-        return ""
+    /// 0-100 fraction of the user's threshold, clamped at 100 for the chart
+    /// geometry (a ring can't trim past full). The hero token digit above
+    /// stays the truthful absolute, so over-threshold usage still reads
+    /// correctly even when the bar is pinned full.
+    private var percent: Double {
+        guard threshold > 0 else { return 0 }
+        return min(100, Double(tokens) / Double(threshold) * 100)
     }
 }

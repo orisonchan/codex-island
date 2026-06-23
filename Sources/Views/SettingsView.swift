@@ -22,6 +22,7 @@ struct SettingsView: View {
     @ObservedObject private var usage = UsageStore.shared
     @ObservedObject private var cost = CostStore.shared
     @ObservedObject private var updater = UpdaterController.shared
+    @ObservedObject private var thresholds = UsageThresholdStore.shared
 
     @AppStorage("Settings.activeTab") private var activeTabRaw: String = SettingsTab.general.rawValue
 
@@ -136,6 +137,7 @@ struct SettingsView: View {
     private var displayTab: some View {
         VStack(alignment: .leading, spacing: 0) {
             chartSection
+            usageThresholdSection
             costStyleSection
             targetDisplaySection
             if spacingSectionVisible {
@@ -631,6 +633,82 @@ struct SettingsView: View {
         .padding(.top, 18)
         .padding(.bottom, 14)
     }
+
+    /// Token-volume thresholds that define "100%" on the Usage page's 5h / 7d
+    /// tiles. Entered in millions so the numbers stay small (200 = 200M).
+    /// Clamped to a non-zero range — a 0 threshold would divide-by-zero the
+    /// percentage math in `ChartTile`.
+    private var usageThresholdSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionLabel("Usage thresholds", hint: "defines 100%")
+            VStack(spacing: 6) {
+                thresholdInputLine(
+                    label: "5 hours",
+                    value: Binding(
+                        get: { thresholds.fiveHour / 1_000_000 },
+                        set: { thresholds.fiveHour = $0 * 1_000_000 }
+                    )
+                )
+                thresholdInputLine(
+                    label: "7 days",
+                    value: Binding(
+                        get: { thresholds.sevenDay / 1_000_000 },
+                        set: { thresholds.sevenDay = $0 * 1_000_000 }
+                    )
+                )
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .padding(.bottom, 14)
+    }
+
+    @ViewBuilder
+    private func thresholdInputLine(label: String, value: Binding<Int>) -> some View {
+        let clamped = Binding<Int>(
+            get: { value.wrappedValue },
+            set: { newValue in
+                let lo = Self.thresholdMRange.lowerBound
+                let hi = Self.thresholdMRange.upperBound
+                value.wrappedValue = max(lo, min(hi, newValue))
+            }
+        )
+        HStack(spacing: 10) {
+            Text(L10n.tr(label))
+                .font(Typography.rowTitle)
+                .tracking(-0.07)
+                .foregroundStyle(.white.opacity(0.92))
+            Spacer(minLength: 8)
+            HStack(spacing: 3) {
+                TextField("", value: clamped, format: .number)
+                    .textFieldStyle(.plain)
+                    .multilineTextAlignment(.center)
+                    .font(Typography.bodyNumber)
+                    .foregroundStyle(.white.opacity(0.95))
+                    .monospacedDigit()
+                    .frame(width: 56, height: 18)
+                    .clipped()
+                Text("M")
+                    .font(Typography.bodyNumber)
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+            .frame(width: 80, height: 28)
+            .background {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(.white.opacity(0.05))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+                    }
+            }
+        }
+        .padding(.vertical, 5)
+    }
+
+    /// 1M … 100B tokens, expressed in millions (matches `UsageThresholdStore.range`).
+    private static let thresholdMRange: ClosedRange<Int> = 1...100_000
 
     private var costStyleSection: some View {
         VStack(alignment: .leading, spacing: 0) {

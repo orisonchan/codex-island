@@ -1,10 +1,12 @@
 import SwiftUI
 
 struct RingChart: View {
-    let value: Double      // 0-100
+    let value: Double      // 0-100 fill fraction of the token threshold
     let color: Color
     let label: String
     let sub: String
+    let tokenText: String
+    let tokenUnit: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -29,12 +31,12 @@ struct RingChart: View {
                         .foregroundStyle(.white.opacity(0.55))
                         .textCase(.lowercase)
                     HStack(alignment: .firstTextBaseline, spacing: 1) {
-                        Text("\(Int(value))")
+                        Text(tokenText)
                             .font(Typography.chartValue)
                             .foregroundStyle(UrgencyColor.value(value))
                             .numericTransition(value: value)
                             .animation(.strongEaseOut, value: value)
-                        Text("%")
+                        Text(tokenUnit)
                             .font(Typography.label)
                             .foregroundStyle(.white.opacity(0.5))
                     }

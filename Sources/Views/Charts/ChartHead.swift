@@ -5,6 +5,11 @@ import SwiftUI
 struct ChartHead: View {
     let value: Double
     let label: String
+    /// Token hero digit + suffix (e.g. "12.4" + "M"). `value` stays the
+    /// 0-100 fill fraction for the geometry + urgency color; the digit
+    /// itself is the truthful absolute token count.
+    let tokenText: String
+    let tokenUnit: String
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
@@ -14,12 +19,12 @@ struct ChartHead: View {
                 .textCase(.lowercase)
             Spacer()
             HStack(alignment: .firstTextBaseline, spacing: 1) {
-                Text("\(Int(value))")
+                Text(tokenText)
                     .font(Typography.chartValue)
                     .foregroundStyle(UrgencyColor.value(value))
                     .numericTransition(value: value)
                     .animation(.strongEaseOut, value: value)
-                Text("%")
+                Text(tokenUnit)
                     .font(Typography.label)
                     .foregroundStyle(.white.opacity(0.5))
             }

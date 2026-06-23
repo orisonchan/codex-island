@@ -1,15 +1,17 @@
 import SwiftUI
 
 struct SparkChart: View {
-    let value: Double      // 0-100
+    let value: Double      // 0-100 fill fraction of the token threshold
     let color: Color
     let label: String
     let sub: String
     let seed: Int
+    let tokenText: String
+    let tokenUnit: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ChartHead(value: value, label: label)
+            ChartHead(value: value, label: label, tokenText: tokenText, tokenUnit: tokenUnit)
             SparkSVG(value: value, color: color, seed: seed)
                 .frame(height: 50)
                 .animation(.strongEaseOut, value: value)

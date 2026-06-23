@@ -51,6 +51,15 @@ enum CostSummary {
         // extra `>=` per event — cheap relative to JSON parsing upstream.
         var weekTokensByModel: [String: Int] = [:]
         var weekDollarsByModel: [String: Double] = [:]
+        // Per-window grand totals (both flavors) for the Usage page's
+        // token-volume tiles. Unlike the per-model maps above — which gate
+        // on `billable > 0` to drop cache-read-only rows from the breakdown
+        // — these accumulate every event so the `.all` flavor includes cache
+        // reads, matching `TokenCountMode.all` semantics.
+        var recentBillableTokens = 0
+        var recentAllTokens = 0
+        var weekBillableTokens = 0
+        var weekAllTokens = 0
 
         // Drop events older than every window's start. Using `min(...)`
         // matters here because the rolling 7-day window straddles month
@@ -107,6 +116,8 @@ enum CostSummary {
             // month (when month is short). Compute canonical name once and
             // reuse for the 5h slice to avoid double work.
             if event.timestamp >= weekStart {
+                weekBillableTokens += billable
+                weekAllTokens += tokens
                 let canon = Pricing.canonicalModelName(event.model)
                 if billable > 0 {
                     weekTokensByModel[canon, default: 0] += billable
@@ -117,6 +128,8 @@ enum CostSummary {
 
                 // 5h rolling window slice — strict subset of weekly.
                 if event.timestamp >= recentStart {
+                    recentBillableTokens += billable
+                    recentAllTokens += tokens
                     if billable > 0 {
                         recentTokensByModel[canon, default: 0] += billable
                     }
@@ -157,6 +170,10 @@ enum CostSummary {
             ),
             recentByModel: recentRows,
             weekByModel: weekRows,
+            recentTokens: recentAllTokens,
+            recentBillableTokens: recentBillableTokens,
+            weekTokens: weekAllTokens,
+            weekBillableTokens: weekBillableTokens,
             dailyTokens: dailyTokenBuckets(
                 start: historyStart,
                 tokens: historyTokenBuckets,
@@ -242,6 +259,10 @@ enum CostSummary {
         // OpenAI: keep as-is, just uppercase the GPT prefix.
         if canonical.hasPrefix("gpt-") {
             return canonical.replacingOccurrences(of: "gpt-", with: "GPT-")
+        }
+        // Zhipu GLM — uppercase the family prefix: "glm-5.2" → "GLM-5.2".
+        if canonical.hasPrefix("glm-") {
+            return "GLM-" + canonical.dropFirst("glm-".count)
         }
         // OpenAI reasoning family ("o3-pro", "o4-mini-high", etc.) — already
         // short and conventional, capitalize only the leading letter so it

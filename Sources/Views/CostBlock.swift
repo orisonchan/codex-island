@@ -306,23 +306,8 @@ struct CostTile: View {
         }
     }
 
-    private var tokensValue: String {
-        let n = displayedTokens
-        let v = Double(n)
-        if n < 1_000 { return "\(n)" }
-        if n < 10_000 { return String(format: "%.1f", v / 1_000) }
-        if n < 1_000_000 { return String(format: "%.0f", v / 1_000) }
-        if n < 1_000_000_000 { return String(format: "%.1f", v / 1_000_000) }
-        return String(format: "%.1f", v / 1_000_000_000)
-    }
-
-    private var tokensUnit: String {
-        let n = displayedTokens
-        if n < 1_000 { return "tok" }
-        if n < 1_000_000 { return "k" }
-        if n < 1_000_000_000 { return "M" }
-        return "B"
-    }
+    private var tokensValue: String { TokenFormat.value(displayedTokens) }
+    private var tokensUnit: String { TokenFormat.unit(displayedTokens) }
 
     private var formattedDollarsCompact: String {
         let v = window.dollars

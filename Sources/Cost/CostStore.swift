@@ -131,6 +131,10 @@ final class CostStore: ObservableObject {
                 series: [4.32, 11.52, 41.47, 47.80, 67.99, 88.68, 208.14, 249.74, 327.76, 406.09, 438.15, 462.90, 477.83, 576.16, 618.03, 689.91, 710.34, 805.93, 851.29, 866.94, 866.94, 902.46, 951.91, 1010.17, 1073.80, 1128.92, 1182.69, 1219.69, 1366.31, 1510.80],
                 label: "April", error: nil, unknownModels: []
             ),
+            recentTokens: 121_000_000,
+            recentBillableTokens: 12_100_000,
+            weekTokens: 1_420_000_000,
+            weekBillableTokens: 142_000_000,
             dailyTokens: Self.demoDailyBuckets([
                 24, 31, 128, 44, 82, 76, 310, 122, 218, 236,
                 98, 64, 47, 286, 140, 205, 59, 276, 119, 48,
@@ -152,6 +156,10 @@ final class CostStore: ObservableObject {
                 series: [12.20, 26.70, 43.50, 62.40, 83.70, 107.10, 132.80, 160.70, 190.90, 223.30, 257.90, 294.80, 333.90, 375.30, 418.90, 464.70, 512.80, 563.10, 615.70, 670.50, 727.50, 786.80, 848.30, 912.00, 978.00, 1046.20, 1116.70, 1189.40, 1264.30, 1342.60],
                 label: "April", error: nil, unknownModels: []
             ),
+            recentTokens: 92_000_000,
+            recentBillableTokens: 18_400_000,
+            weekTokens: 1_120_000_000,
+            weekBillableTokens: 224_000_000,
             dailyTokens: Self.demoDailyBuckets([
                 12, 18, 24, 29, 37, 42, 51, 59, 66, 74,
                 83, 90, 99, 108, 117, 124, 136, 145, 157, 166,
@@ -207,6 +215,17 @@ final class CostStore: ObservableObject {
         var codexMonthUnknown: [String] = []
         var claudeDailyTokens: [DailyTokenBucket]
         var codexDailyTokens: [DailyTokenBucket]
+        // 5h/7d token-volume totals (additive, defaulted — a v7 snapshot
+        // written before these fields existed decodes as 0 until the next
+        // refresh repopulates, no key bump needed).
+        var claudeRecentTokens: Int = 0
+        var claudeRecentBillable: Int = 0
+        var claudeWeekTokens: Int = 0
+        var claudeWeekBillable: Int = 0
+        var codexRecentTokens: Int = 0
+        var codexRecentBillable: Int = 0
+        var codexWeekTokens: Int = 0
+        var codexWeekBillable: Int = 0
         var lastUpdated: Date?
     }
 
@@ -236,6 +255,14 @@ final class CostStore: ObservableObject {
             codexMonthUnknown: codex.month.unknownModels,
             claudeDailyTokens: claude.dailyTokens,
             codexDailyTokens: codex.dailyTokens,
+            claudeRecentTokens: claude.recentTokens,
+            claudeRecentBillable: claude.recentBillableTokens,
+            claudeWeekTokens: claude.weekTokens,
+            claudeWeekBillable: claude.weekBillableTokens,
+            codexRecentTokens: codex.recentTokens,
+            codexRecentBillable: codex.recentBillableTokens,
+            codexWeekTokens: codex.weekTokens,
+            codexWeekBillable: codex.weekBillableTokens,
             lastUpdated: lastUpdated
         )
         if let data = try? Self.cacheEncoder.encode(snap) {
@@ -258,6 +285,10 @@ final class CostStore: ObservableObject {
                               series: snap.claudeMonthSeries,
                               label: CostBucketing.currentMonthLabel(), error: nil,
                               unknownModels: snap.claudeMonthUnknown),
+            recentTokens: snap.claudeRecentTokens,
+            recentBillableTokens: snap.claudeRecentBillable,
+            weekTokens: snap.claudeWeekTokens,
+            weekBillableTokens: snap.claudeWeekBillable,
             dailyTokens: snap.claudeDailyTokens
         )
         self.codex = ProviderCost(
@@ -270,6 +301,10 @@ final class CostStore: ObservableObject {
                               series: snap.codexMonthSeries,
                               label: CostBucketing.currentMonthLabel(), error: nil,
                               unknownModels: snap.codexMonthUnknown),
+            recentTokens: snap.codexRecentTokens,
+            recentBillableTokens: snap.codexRecentBillable,
+            weekTokens: snap.codexWeekTokens,
+            weekBillableTokens: snap.codexWeekBillable,
             dailyTokens: snap.codexDailyTokens
         )
         self.lastUpdated = snap.lastUpdated

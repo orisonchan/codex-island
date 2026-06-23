@@ -82,6 +82,15 @@ struct ProviderCost {
     /// Per-model breakdown over the rolling last 7 days, sorted by tokens
     /// descending. Approximates the weekly window used by the live tiles.
     var weekByModel: [ModelUsageRow] = []
+    /// Total tokens in the rolling 5h window. `recentTokens` is wire-level
+    /// (cache included, ccusage parity); `recentBillableTokens` is input +
+    /// output only. Powers the Usage page's token-volume tiles, distinct
+    /// from the per-model `recentByModel` breakdown.
+    var recentTokens: Int = 0
+    var recentBillableTokens: Int = 0
+    /// Same pair for the rolling 7d window.
+    var weekTokens: Int = 0
+    var weekBillableTokens: Int = 0
     /// Calendar-local daily history, oldest first, with today included as
     /// the final bucket. Powers the overview contribution grid ranges.
     var dailyTokens: [DailyTokenBucket] = []
