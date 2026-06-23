@@ -22,7 +22,7 @@ final class IslandModel: ObservableObject {
     /// don't jitter the silhouette width during refresh. Grown
     /// symmetrically on both sides regardless of which provider is
     /// visible — keeps the silhouette balanced over the physical notch.
-    let pillSlotWidth: CGFloat = 110
+    let pillSlotWidth: CGFloat = 120
 
     /// Visible expanded panel width.
     private let expandedWidth: CGFloat = 800
