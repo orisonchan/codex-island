@@ -480,9 +480,9 @@ private struct LogoOverlay: View {
     }
 }
 
-/// Per-provider peek pill overlay. Reads token volume (last 5h) from
+/// Per-provider peek pill overlay. Reads token volume (5h + 7d) from
 /// local session logs via CostStore — same source as the Usage page — so
-/// the glance value matches what the user sees on expand. Token count
+/// the glance values match what the user sees on expand. Token count
 /// follows the user's TokenCountMode.
 private struct PeekPillOverlay: View {
     let provider: AlertEngine.Provider
@@ -495,11 +495,11 @@ private struct PeekPillOverlay: View {
 
     var body: some View {
         NotchPeekPill(
-            tokens: tokens,
+            recentTokens: recentTokens,
+            weekTokens: weekTokens,
             loading: loading,
             tint: tint,
-            alignment: provider == .claude ? .leading : .trailing,
-            windowLabel: L10n.tr("5h")
+            alignment: provider == .claude ? .leading : .trailing
         )
         .padding(provider == .claude ? .leading : .trailing, 14)
         .padding(.top, topPadding)
@@ -525,11 +525,19 @@ private struct PeekPillOverlay: View {
         visibility.effectiveVisible(provider: provider)
     }
 
-    private var tokens: Int {
-        let cost = provider == .claude ? costStore.claude : costStore.codex
+    private var recentTokens: Int {
+        let c = provider == .claude ? costStore.claude : costStore.codex
         switch tokenMode.mode {
-        case .all:      return cost.recentTokens
-        case .billable: return cost.recentBillableTokens
+        case .all:      return c.recentTokens
+        case .billable: return c.recentBillableTokens
+        }
+    }
+
+    private var weekTokens: Int {
+        let c = provider == .claude ? costStore.claude : costStore.codex
+        switch tokenMode.mode {
+        case .all:      return c.weekTokens
+        case .billable: return c.weekBillableTokens
         }
     }
 
@@ -552,11 +560,13 @@ private struct PeekPillOverlay: View {
     }
 
     private var peekLabel: String {
-        if tokens <= 0 {
-            return L10n.tr("%@: no token data for 5-hour window", providerLabel)
+        if recentTokens <= 0 && weekTokens <= 0 {
+            return L10n.tr("%@: no token data", providerLabel)
         }
-        return L10n.tr("%@: %@%@ tokens in last 5 hours",
-                       providerLabel, TokenFormat.value(tokens), TokenFormat.unit(tokens))
+        return L10n.tr("%@: %@%@ (5h) / %@%@ (7d) tokens",
+                       providerLabel,
+                       TokenFormat.value(recentTokens), TokenFormat.unit(recentTokens),
+                       TokenFormat.value(weekTokens), TokenFormat.unit(weekTokens))
     }
 }
 
