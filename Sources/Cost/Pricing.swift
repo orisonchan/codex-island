@@ -141,6 +141,39 @@ enum Pricing {
             inputPerMillion: 15, outputPerMillion: 120,
             cacheCreationPerMillion: 15, cacheReadPerMillion: 0
         ),
+
+        // Zhipu GLM — official CNY-per-million rates pasted verbatim as the
+        // USD figure (not in LiteLLM). Absolute totals read ~7x high vs a
+        // true conversion, but for a GLM-only setup the input/output/cache
+        // ratios and trends are exact and self-consistent. cache storage is
+        // 限时免费 (time-limited free) → 0. Source: open.bigmodel.cn/pricing.
+        "glm-5.2": Rates(
+            inputPerMillion: 8, outputPerMillion: 28,
+            cacheCreationPerMillion: 0, cacheReadPerMillion: 2
+        ),
+
+        // MiniMax — official CNY/M-token pay-as-you-go rates pasted verbatim
+        // as the USD figure, same convention as GLM. Text models only
+        // (voice/video/image are per-request, irrelevant to token usage).
+        // Source: platform.minimaxi.com/docs/guides/pricing-paygo.
+        "MiniMax-M3": Rates(
+            // Tiered by input length (≤512k vs >512k) and currently 永久五折
+            // (perm 50% off). Uses the ≤512k discounted tier — the common
+            // case; long-context (>512k) calls under-bill ~2x. The priority
+            // tier is 1.5x but shares the same model id (service_tier param),
+            // so it can't be priced separately here. cache write is absent
+            // from the pricing page → 0 (likely under-bills if billed).
+            inputPerMillion: 2.1, outputPerMillion: 8.4,
+            cacheCreationPerMillion: 0, cacheReadPerMillion: 0.42
+        ),
+        "MiniMax-M2.7": Rates(
+            inputPerMillion: 2.1, outputPerMillion: 8.4,
+            cacheCreationPerMillion: 2.625, cacheReadPerMillion: 0.42
+        ),
+        "MiniMax-M2.7-highspeed": Rates(
+            inputPerMillion: 4.2, outputPerMillion: 16.8,
+            cacheCreationPerMillion: 2.625, cacheReadPerMillion: 0.42
+        ),
     ]
 
     /// Compute the dollar cost of a single TokenEvent. Returns 0 for unknown
