@@ -14,6 +14,7 @@ import SwiftUI
 ///   13pt SF Pro semibold   — provider titles ("Claude", "Codex")
 ///   13pt SF Pro medium     — Settings row titles
 ///   12pt SF Pro medium     — tab labels (a hair larger so they feel clickable)
+///   12pt SF Mono semibold  — peek pill numerics (5h · 7d tokens)
 ///   11pt — body row
 ///       SF Mono semibold for inline numerics (bar dollars, sparkline overlay)
 ///       SF Pro medium for window labels ("Today", "Apr")
@@ -39,6 +40,7 @@ enum Typography {
     static let chartValue    = Font.system(size: 18, weight: .semibold, design: .monospaced)
     static let previewNumber = Font.system(size: 15, weight: .semibold, design: .monospaced)
     static let bodyNumber    = Font.system(size: 11, weight: .semibold, design: .monospaced)
+    static let peekNumber    = Font.system(size: 12, weight: .semibold, design: .monospaced)
 
     // MARK: - Display text (SF Pro)
 

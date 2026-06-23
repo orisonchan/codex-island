@@ -44,19 +44,19 @@ struct NotchPeekPill: View {
 
     private var recentLabel: some View {
         Text(tokenText(recentTokens))
-            .font(Typography.bodyNumber)
+            .font(Typography.peekNumber)
             .foregroundStyle(tint)
     }
 
     private var weekLabel: some View {
         Text(tokenText(weekTokens))
-            .font(Typography.bodyNumber)
+            .font(Typography.peekNumber)
             .foregroundStyle(.white.opacity(0.70))
     }
 
     private var separator: some View {
         Text("·")
-            .font(Typography.bodyNumber)
+            .font(Typography.peekNumber)
             .foregroundStyle(.white.opacity(0.40))
     }
 
